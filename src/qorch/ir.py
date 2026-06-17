@@ -1,0 +1,109 @@
+"""Circuit intermediate representation + OpenQASM-3 (subset) ingestion.
+
+The IR is immutable: every builder method returns a *new* ``Circuit`` (see ADR-5).
+Bit-ordering convention: in a result bitstring, the leftmost character is qubit 0
+(documented in architecture.md §5 to avoid silent endianness bugs).
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+
+# Gates the slice understands. Adapters/transpilers may lower these further.
+SUPPORTED_GATES: frozenset[str] = frozenset({"h", "x", "z", "cx"})
+
+
+@dataclass(frozen=True)
+class Gate:
+    """A single operation on one or more qubits."""
+
+    name: str
+    qubits: tuple[int, ...]
+    params: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class Circuit:
+    """An immutable quantum circuit value.
+
+    ``measured`` lists the qubits to read out, in output-bitstring order. Empty means
+    "measure all qubits, ascending".
+    """
+
+    num_qubits: int
+    gates: tuple[Gate, ...] = ()
+    measured: tuple[int, ...] = ()
+
+    # --- validation -------------------------------------------------------
+    def __post_init__(self) -> None:
+        if self.num_qubits <= 0:
+            raise ValueError("num_qubits must be positive")
+        for g in self.gates:
+            if g.name not in SUPPORTED_GATES:
+                raise ValueError(f"unsupported gate: {g.name!r}")
+            for q in g.qubits:
+                if not 0 <= q < self.num_qubits:
+                    raise ValueError(f"qubit {q} out of range for {self.num_qubits} qubits")
+        for q in self.measured:
+            if not 0 <= q < self.num_qubits:
+                raise ValueError(f"measured qubit {q} out of range")
+
+    @property
+    def readout_qubits(self) -> tuple[int, ...]:
+        """Qubits actually read out, resolving the 'measure all' default."""
+        return self.measured if self.measured else tuple(range(self.num_qubits))
+
+    # --- immutable builders ----------------------------------------------
+    def _add(self, name: str, *qubits: int, params: tuple[float, ...] = ()) -> "Circuit":
+        return replace(self, gates=self.gates + (Gate(name, qubits, params),))
+
+    def h(self, q: int) -> "Circuit":
+        return self._add("h", q)
+
+    def x(self, q: int) -> "Circuit":
+        return self._add("x", q)
+
+    def z(self, q: int) -> "Circuit":
+        return self._add("z", q)
+
+    def cx(self, control: int, target: int) -> "Circuit":
+        return self._add("cx", control, target)
+
+    def measure(self, *qubits: int) -> "Circuit":
+        return replace(self, measured=self.measured + qubits)
+
+
+# --- OpenQASM 3 (subset) ingestion ---------------------------------------
+_QUBIT_DECL = re.compile(r"qubit\[(\d+)\]\s+(\w+)\s*;")
+_ONE_Q = re.compile(r"(h|x|z)\s+\w+\[(\d+)\]\s*;")
+_CX = re.compile(r"cx\s+\w+\[(\d+)\]\s*,\s*\w+\[(\d+)\]\s*;")
+_MEASURE = re.compile(r"(?:\w+\s*=\s*)?measure\s+\w+\[(\d+)\]\s*;")
+
+
+def from_qasm3(text: str) -> Circuit:
+    """Parse a documented subset of OpenQASM 3 into a ``Circuit``.
+
+    Supported: ``qubit[n] q;`` declaration, ``h/x/z q[i];``, ``cx q[i], q[j];``,
+    and ``measure q[i];``. Enough for the M1 vertical slice; the full grammar is
+    delegated to a wrapped parser at M2.
+    """
+    decl = _QUBIT_DECL.search(text)
+    if not decl:
+        raise ValueError("no 'qubit[n] name;' declaration found")
+    circuit = Circuit(num_qubits=int(decl.group(1)))
+
+    # strip comments, then process statements in source order
+    body = re.sub(r"//.*", "", text)
+    for stmt in body.split(";"):
+        stmt = stmt.strip()
+        if not stmt or stmt.startswith(("OPENQASM", "include", "qubit", "bit")):
+            continue
+        line = stmt + ";"
+        if m := _CX.fullmatch(line):
+            circuit = circuit.cx(int(m.group(1)), int(m.group(2)))
+        elif m := _ONE_Q.fullmatch(line):
+            circuit = circuit._add(m.group(1), int(m.group(2)))
+        elif m := _MEASURE.fullmatch(line):
+            circuit = circuit.measure(int(m.group(1)))
+    return circuit

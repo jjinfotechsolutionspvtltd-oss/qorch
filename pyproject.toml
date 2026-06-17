@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qorch"
+version = "0.1.0"
+description = "QS-004 Quantum Orchestration Layer — hardware-agnostic control plane for quantum execution"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Proprietary"
+authors = [{ name = "JJISPL Quantum Technologies" }]
+# The M1 vertical slice is intentionally dependency-free (ADR-6).
+dependencies = []
+
+[project.optional-dependencies]
+# M2+: real-QPU adapters and transpiler reuse layer in.
+qiskit = ["qiskit>=1.0", "qiskit-aer>=0.14"]
+braket = ["amazon-braket-sdk>=1.70"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.5"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qorch"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src/qorch"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
