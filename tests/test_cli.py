@@ -1,6 +1,6 @@
 """Tests for the CLI interface."""
 
-from qorch.cli import _parse_gates, _build_backend, cmd_list, cmd_run, cmd_transpile
+from qorch.cli import _parse_gates, _build_backend, cmd_list
 
 
 def test_parse_gates_h_cx():
