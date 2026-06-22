@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "QS-004 Quantum Orchestration Layer — hardware-agnostic control plane for quantum execution"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "Proprietary"
+license = "LicenseRef-Proprietary"
 authors = [{ name = "JJISPL Quantum Technologies" }]
 # The M1 vertical slice is intentionally dependency-free (ADR-6).
 dependencies = []
