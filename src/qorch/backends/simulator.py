@@ -8,6 +8,7 @@ us demonstrate the error-mitigation payoff without real hardware.
 
 from __future__ import annotations
 
+import cmath
 import math
 import random
 from dataclasses import dataclass
@@ -18,12 +19,35 @@ from qorch.ir import Circuit
 _INV_SQRT2 = 1.0 / math.sqrt(2.0)
 
 # Single-qubit gate matrices as 2x2 row-major tuples of complex amplitudes.
+# Parametric gates (rx, ry, rz, ms) are computed at runtime via _gate_matrix().
 _GATES_1Q: dict[str, tuple[complex, complex, complex, complex]] = {
     "h": (_INV_SQRT2, _INV_SQRT2, _INV_SQRT2, -_INV_SQRT2),
     "x": (0, 1, 1, 0),
     "y": (0, -1j, 1j, 0),
     "z": (1, 0, 0, -1),
+    "sx": (0.5 + 0.5j, 0.5 - 0.5j, 0.5 - 0.5j, 0.5 + 0.5j),
+    "id": (1, 0, 0, 1),
 }
+
+
+def _gate_matrix(name: str, params: tuple[float, ...] = ()) -> tuple[complex, complex, complex, complex]:
+    """Return 2x2 matrix (row-major) for any supported gate."""
+    if name in _GATES_1Q:
+        return _GATES_1Q[name]
+    if name == "rx":
+        theta = params[0] if params else 0.0
+        c = math.cos(theta / 2)
+        s = -1j * math.sin(theta / 2)
+        return (c, s, s, c)
+    if name == "ry":
+        theta = params[0] if params else 0.0
+        c = math.cos(theta / 2)
+        s = math.sin(theta / 2)
+        return (c, -s, s, c)
+    if name == "rz":
+        theta = params[0] if params else 0.0
+        return (cmath.exp(-1j * theta / 2), 0, 0, cmath.exp(1j * theta / 2))
+    raise ValueError(f"unknown gate: {name!r}")
 
 # Pauli error operators for the depolarizing channel (trajectory Monte Carlo).
 _PAULIS: dict[str, tuple[complex, complex, complex, complex]] = {
@@ -84,7 +108,7 @@ class LocalSimulator(Backend):
     def properties(self) -> BackendProperties:
         return BackendProperties(
             num_qubits=30,  # statevector practical ceiling; advisory only
-            basis_gates=("h", "x", "z", "cx"),
+            basis_gates=("h", "x", "y", "z", "sx", "rx", "ry", "rz", "cx", "swap", "id"),
             is_simulator=True,
             readout_fidelity=(),
         )
@@ -117,7 +141,8 @@ class LocalSimulator(Backend):
             elif gate.name == "swap":
                 self._apply_swap(state, n, gate.qubits[0], gate.qubits[1])
             else:
-                self._apply_1q(state, n, _GATES_1Q[gate.name], gate.qubits[0])
+                m = _gate_matrix(gate.name, gate.params)
+                self._apply_1q(state, n, m, gate.qubits[0])
         return state
 
     def _evolve_trajectory(self, circuit: Circuit) -> list[complex]:
@@ -132,7 +157,8 @@ class LocalSimulator(Backend):
             elif gate.name == "swap":
                 self._apply_swap(state, n, gate.qubits[0], gate.qubits[1])
             else:
-                self._apply_1q(state, n, _GATES_1Q[gate.name], gate.qubits[0])
+                m = _gate_matrix(gate.name, gate.params)
+                self._apply_1q(state, n, m, gate.qubits[0])
             for q in gate.qubits:
                 if self._rng.random() < p:
                     pauli = _PAULIS[self._rng.choice(("x", "y", "z"))]

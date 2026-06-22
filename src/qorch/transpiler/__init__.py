@@ -6,8 +6,9 @@ from qorch.transpiler.gateset import (
     TIFR_SUPERCONDUCTING,
     DRDO_MIRAI,
 )
-from qorch.transpiler.decompose import decompose, DECOMPOSITION_RULES
-from qorch.transpiler.routing import route, CouplingMap
+from qorch.transpiler.decompose import DECOMPOSITION_RULES, decompose
+from qorch.transpiler.optimizer import optimize
+from qorch.transpiler.routing import CouplingMap, route
 
 __all__ = [
     "IndianGateSet",
@@ -18,4 +19,5 @@ __all__ = [
     "route",
     "CouplingMap",
     "DECOMPOSITION_RULES",
+    "optimize",
 ]

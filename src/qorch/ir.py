@@ -67,6 +67,9 @@ class Circuit:
     def x(self, q: int) -> "Circuit":
         return self._add("x", q)
 
+    def y(self, q: int) -> "Circuit":
+        return self._add("y", q)
+
     def z(self, q: int) -> "Circuit":
         return self._add("z", q)
 
@@ -75,6 +78,9 @@ class Circuit:
 
     def sx(self, q: int) -> "Circuit":
         return self._add("sx", q)
+
+    def id(self, q: int) -> "Circuit":
+        return self._add("id", q)
 
     def rz(self, q: int, theta: float) -> "Circuit":
         return self._add("rz", q, params=(theta,))
