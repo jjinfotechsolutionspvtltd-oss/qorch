@@ -11,7 +11,10 @@ import re
 from dataclasses import dataclass, replace
 
 # Gates the slice understands. Adapters/transpilers may lower these further.
-SUPPORTED_GATES: frozenset[str] = frozenset({"h", "x", "z", "cx"})
+# Extended for transpiler: sx, rz, rx, ry, swap, ms (Mølmer–Sørensen for ion trap)
+SUPPORTED_GATES: frozenset[str] = frozenset({
+    "h", "x", "y", "z", "cx", "sx", "rz", "rx", "ry", "swap", "ms", "id"
+})
 
 
 @dataclass(frozen=True)
@@ -70,30 +73,50 @@ class Circuit:
     def cx(self, control: int, target: int) -> "Circuit":
         return self._add("cx", control, target)
 
+    def sx(self, q: int) -> "Circuit":
+        return self._add("sx", q)
+
+    def rz(self, q: int, theta: float) -> "Circuit":
+        return self._add("rz", q, params=(theta,))
+
+    def rx(self, q: int, theta: float) -> "Circuit":
+        return self._add("rx", q, params=(theta,))
+
+    def ry(self, q: int, theta: float) -> "Circuit":
+        return self._add("ry", q, params=(theta,))
+
+    def swap(self, q0: int, q1: int) -> "Circuit":
+        return self._add("swap", q0, q1)
+
+    def ms(self, q0: int, q1: int, theta: float = 0.25) -> "Circuit":
+        return self._add("ms", q0, q1, params=(theta,))
+
     def measure(self, *qubits: int) -> "Circuit":
         return replace(self, measured=self.measured + qubits)
 
 
 # --- OpenQASM 3 (subset) ingestion ---------------------------------------
 _QUBIT_DECL = re.compile(r"qubit\[(\d+)\]\s+(\w+)\s*;")
-_ONE_Q = re.compile(r"(h|x|z)\s+\w+\[(\d+)\]\s*;")
+_ONE_Q = re.compile(r"(h|x|z|sx)\s+\w+\[(\d+)\]\s*;")
+_PARAM_Q = re.compile(r"(rx|ry|rz)\(\s*([\d.]+)\s*\)\s+\w+\[(\d+)\]\s*;")
 _CX = re.compile(r"cx\s+\w+\[(\d+)\]\s*,\s*\w+\[(\d+)\]\s*;")
+_SWAP = re.compile(r"swap\s+\w+\[(\d+)\]\s*,\s*\w+\[(\d+)\]\s*;")
+_MS = re.compile(r"ms\(\s*([\d.]+)\s*\)\s+\w+\[(\d+)\]\s*,\s*\w+\[(\d+)\]\s*;")
 _MEASURE = re.compile(r"(?:\w+\s*=\s*)?measure\s+\w+\[(\d+)\]\s*;")
 
 
 def from_qasm3(text: str) -> Circuit:
     """Parse a documented subset of OpenQASM 3 into a ``Circuit``.
 
-    Supported: ``qubit[n] q;`` declaration, ``h/x/z q[i];``, ``cx q[i], q[j];``,
-    and ``measure q[i];``. Enough for the M1 vertical slice; the full grammar is
-    delegated to a wrapped parser at M2.
+    Supported: ``qubit[n] q;``, ``h/x/z/sx q[i];``, ``rx(θ)/ry(θ)/rz(θ) q[i];``,
+    ``cx q[i], q[j];``, ``swap q[i], q[j];``, ``ms(θ) q[i], q[j];``,
+    and ``measure q[i];``.
     """
     decl = _QUBIT_DECL.search(text)
     if not decl:
         raise ValueError("no 'qubit[n] name;' declaration found")
     circuit = Circuit(num_qubits=int(decl.group(1)))
 
-    # strip comments, then process statements in source order
     body = re.sub(r"//.*", "", text)
     for stmt in body.split(";"):
         stmt = stmt.strip()
@@ -102,6 +125,12 @@ def from_qasm3(text: str) -> Circuit:
         line = stmt + ";"
         if m := _CX.fullmatch(line):
             circuit = circuit.cx(int(m.group(1)), int(m.group(2)))
+        elif m := _SWAP.fullmatch(line):
+            circuit = circuit.swap(int(m.group(1)), int(m.group(2)))
+        elif m := _MS.fullmatch(line):
+            circuit = circuit.ms(int(m.group(2)), int(m.group(3)), float(m.group(1)))
+        elif m := _PARAM_Q.fullmatch(line):
+            circuit = circuit._add(m.group(1), int(m.group(3)), params=(float(m.group(2)),))
         elif m := _ONE_Q.fullmatch(line):
             circuit = circuit._add(m.group(1), int(m.group(2)))
         elif m := _MEASURE.fullmatch(line):

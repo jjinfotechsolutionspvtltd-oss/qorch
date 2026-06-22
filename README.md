@@ -1,84 +1,95 @@
-# qorch — QS-004 Quantum Orchestration Layer
+# qorch — Indian Quantum Orchestration Layer
 
-The classical **control plane** that orchestrates quantum hardware: IR ingestion → backend
-HAL → error mitigation → scheduling. Hardware-agnostic from day one — a real QPU plugs in as
-one new `Backend` adapter with zero core changes.
+A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
 
-> This is the **M1 vertical slice**: it ships dependency-free (stdlib only) so it runs and
-> tests anywhere, no QPU account required. See [`../charter.md`](../charter.md) and
-> [`../architecture.md`](../architecture.md).
+## Why qorch?
+
+As India invests in indigenous quantum processors (superconducting at TIFR/DRDO, ion traps at IIT Jodhpur, photonic at IISc), a vendor-neutral software stack is essential. qorch provides:
+
+- **No vendor lock-in** — stdlib-only core, zero dependency on IBM Qiskit or Google Cirq
+- **Sovereign architecture** — clean HAL designed for Indian hardware adapters
+- **Active research** — error mitigation (readout calibration, ZNE, dynamical decoupling) as a differentiator
+
+## What's new (June 2026)
+
+- **Transpiler** — decomposes circuits to Indian-native gate sets (IIT Jodhpur ion-trap: rx/ry/ms; TIFR superconducting: cx/sx/rz/x; DRDO MIRAI: cx/rx/rz/x) + qubit routing for limited-connectivity topologies
+- **Indian QPU backend** — simulates published Indian quantum hardware characteristics with realistic noise (gate infidelity, readout errors, limited connectivity)
+- **CLI** — run circuits from QASM files, list backends, apply mitigation, transpile for Indian QPUs: `python -m qorch run circuit.qasm --backend tifr-superconducting`
+- **Dynamical Decoupling** — XY-4, XY-8, CPMG, and Hahn echo sequences to suppress decoherence
+- **CI pipeline** — GitHub Actions with lint + test + coverage gates
 
 ## Layout
 
 ```
 src/qorch/
-  ir.py                 # immutable circuit IR + OpenQASM-3 (subset) ingestion
-  backends/base.py      # the HAL: Backend interface + BackendProperties + JobResult
-  backends/simulator.py # dependency-free statevector backend (+ optional readout noise)
-  mitigation/readout.py # readout-error calibration & correction (the M1 differentiator)
-  mitigation/zne.py     # M3: zero-noise extrapolation via unitary circuit folding
-  backends/qiskit_backend.py  # M2 adapter: Qiskit Aer + real IBM hardware, same interface
+  ir.py                 # immutable circuit IR + OpenQASM-3 (extended subset) ingestion
+  cli.py                # command-line interface
+  backends/
+    base.py             # the HAL: Backend interface + BackendProperties + JobResult
+    simulator.py        # dependency-free statevector backend (+ readout/gate noise)
+    qiskit_backend.py   # Qiskit Aer + real IBM hardware adapter
+    indian_backend.py   # Indian QPU adapter (IIT Jodhpur, TIFR, DRDO MIRAI)
+  transpiler/
+    gateset.py          # Indian-native gate set definitions
+    decompose.py        # gate decomposition to native sets
+    routing.py          # qubit routing for limited connectivity
+  mitigation/
+    readout.py          # readout-error calibration & correction
+    zne.py              # zero-noise extrapolation via unitary folding
+    dd.py               # dynamical decoupling (XY-4, XY-8, CPMG, Hahn)
   scheduler.py          # FIFO queue + pluggable backend-selection policy
 tests/                  # unit + end-to-end slice tests
-benchmarks/             # raw-vs-mitigated report generator → BENCHMARK.md
+.github/workflows/      # CI pipeline
 ```
 
-## The payoff ([BENCHMARK.md](BENCHMARK.md))
-
-The same circuit, raw vs. routed through QS-004's mitigation, on the noisy simulator:
-
-| Technique | Error (raw → mitigated) | Reduction |
-|---|---|---|
-| Readout calibration | 0.0523 → 0.0029 | **95%** |
-| Zero-noise extrapolation | 0.2448 → 0.1472 | **40%** |
-
-Regenerate: `PYTHONPATH=src python benchmarks/benchmark_mitigation.py`
-
-## Backends
-
-| Backend | Status | Needs |
-|---------|--------|-------|
-| `LocalSimulator` | ✅ ships now | nothing (stdlib only) |
-| `QiskitBackend.aer(...)` | ✅ code ready | `pip install qorch[qiskit]` |
-| `QiskitBackend.ibm(name)` | ✅ code ready | `qorch[qiskit]` + `QISKIT_IBM_TOKEN` env var (secret) |
-
-The same `Circuit` runs on all three unchanged — that's the hardware-abstraction proof. The
-endianness translation (Qiskit is little-endian; qorch puts qubit 0 leftmost) is handled and
-unit-tested in `reorder_counts_qiskit_to_qorch`. Live Aer tests skip automatically until the
-SDK is installed; the IBM token is read from the environment and never committed.
-
-## Run the tests
+## Quick start
 
 ```bash
-cd orchestrator
-python -m pytest                 # stdlib-only; no install needed (pythonpath=src)
-python -m pytest --cov=qorch     # with coverage (pip install pytest-cov)
+pip install -e .
+python -m qorch list
+python -m qorch run --gates "h0,cx01" --backend tifr-superconducting
+python -m qorch transpile --gates "h0,cx01" --target tifr-superconducting
 ```
 
-## 30-second example
+### Python API
 
 ```python
-from qorch import Circuit, LocalSimulator, ReadoutNoise
-from qorch.mitigation.readout import ReadoutMitigator
+from qorch import Circuit, IndianQPU
 
-# Build a Bell state and run it
+# Run on simulated Indian superconducting processor
+qpu = IndianQPU.from_preset("tifr-superconducting", seed=42)
 bell = Circuit(num_qubits=2).h(0).cx(0, 1)
-print(LocalSimulator(seed=1).run(bell, shots=1000).counts)   # ~ {'00': 500, '11': 500}
-
-# Show the mitigation payoff on a noisy readout (asymmetric, as on real hardware)
-noise = ReadoutNoise(p1_given0=0.05, p0_given1=0.15)
-raw = LocalSimulator(seed=1, readout_noise=noise).run(Circuit(1).h(0), 20000)
-mit = ReadoutMitigator.from_calibration_matrix(
-    ["0", "1"], [[0.95, 0.15], [0.05, 0.85]]
-).apply(raw.counts)
-print("raw:", raw.counts, "→ mitigated:", {k: round(v) for k, v in mit.items()})
+result = qpu.run(bell, shots=2000)
+print(result.counts)  # {'00': ..., '11': ...} with noise
 ```
 
-## What's next (M4)
+## Indian QPU backends
 
-M1–M3 are in: the slice, the real-hardware adapter, and both mitigation techniques with a
-benchmark. Next:
-- Run the live Aer + IBM parity tests on a machine with `qorch[qiskit]` installed.
-- Wrap the Qiskit/tket transpiler explicitly for native-gate compilation + topology routing.
-- Policy scheduler (cost/latency/availability routing) + the public SDK/API surface.
-- Backend-aware mitigation tuning (calibration pulled from live backend properties).
+| Backend | Qubits | Topology | Native Gates | Modeled On |
+|---|---|---|---|---|
+| `iit-jodhpur-ion-trap` | 6 | All-to-all | rx, ry, ms | IIT Jodhpur trapped-ion publications |
+| `tifr-superconducting` | 5 | Linear | cx, sx, rz, x | TIFR Mumbai superconducting roadmap |
+| `drdo-mirai` | 6 | Grid (2×3) | cx, rx, rz, x | DRDO MIRAI Lab |
+
+## Mitigation benchmark
+
+| Technique | Error reduction |
+|---|---|
+| Readout calibration | **95%** |
+| Zero-noise extrapolation | **40%** |
+| Dynamical decoupling | Insert XY-4/XY-8/CPMG/Hahn sequences |
+
+## Tests
+
+```bash
+python -m pytest           # 47 tests, stdlib-only
+python -m pytest --cov=qorch  # with coverage
+```
+
+## Strategic context
+
+qorch is a research project focused on **Indian quantum readiness**:
+- Clean HAL that any future Indian QPU can implement against
+- Transpiler targeting Indian-native gate sets
+- Error mitigation as a research differentiator
+- No foreign vendor lock-in

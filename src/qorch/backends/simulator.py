@@ -8,7 +8,6 @@ us demonstrate the error-mitigation payoff without real hardware.
 
 from __future__ import annotations
 
-import cmath
 import math
 import random
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ _INV_SQRT2 = 1.0 / math.sqrt(2.0)
 _GATES_1Q: dict[str, tuple[complex, complex, complex, complex]] = {
     "h": (_INV_SQRT2, _INV_SQRT2, _INV_SQRT2, -_INV_SQRT2),
     "x": (0, 1, 1, 0),
+    "y": (0, -1j, 1j, 0),
     "z": (1, 0, 0, -1),
 }
 
@@ -114,6 +114,8 @@ class LocalSimulator(Backend):
         for gate in circuit.gates:
             if gate.name == "cx":
                 self._apply_cx(state, n, gate.qubits[0], gate.qubits[1])
+            elif gate.name == "swap":
+                self._apply_swap(state, n, gate.qubits[0], gate.qubits[1])
             else:
                 self._apply_1q(state, n, _GATES_1Q[gate.name], gate.qubits[0])
         return state
@@ -127,6 +129,8 @@ class LocalSimulator(Backend):
         for gate in circuit.gates:
             if gate.name == "cx":
                 self._apply_cx(state, n, gate.qubits[0], gate.qubits[1])
+            elif gate.name == "swap":
+                self._apply_swap(state, n, gate.qubits[0], gate.qubits[1])
             else:
                 self._apply_1q(state, n, _GATES_1Q[gate.name], gate.qubits[0])
             for q in gate.qubits:
@@ -148,6 +152,11 @@ class LocalSimulator(Backend):
                 a, b = state[i], state[j]
                 state[i] = m[0] * a + m[1] * b
                 state[j] = m[2] * a + m[3] * b
+
+    def _apply_swap(self, state: list[complex], n: int, q0: int, q1: int) -> None:
+        self._apply_cx(state, n, q0, q1)
+        self._apply_cx(state, n, q1, q0)
+        self._apply_cx(state, n, q0, q1)
 
     def _apply_cx(self, state: list[complex], n: int, control: int, target: int) -> None:
         c_stride = 1 << (n - 1 - control)
