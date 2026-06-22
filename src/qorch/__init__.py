@@ -10,6 +10,7 @@ from qorch.backends.indian_backend import IndianQPU, INDIAN_QPU_CONFIGS
 from qorch.backends.simulator import GateNoise, LocalSimulator, ReadoutNoise
 from qorch.ir import Circuit, Gate, from_qasm3
 from qorch.mitigation.dd import DD_SEQUENCES, apply_dd_mitigation, insert_dd
+from qorch.mitigation.pec import PECResult, pec_expectation
 from qorch.mitigation.readout import ReadoutMitigator
 from qorch.mitigation.zne import (
     ZNEResult,
@@ -40,6 +41,8 @@ __all__ = [
     "expectation_z",
     "fold_circuit",
     "zne_expectation",
+    "PECResult",
+    "pec_expectation",
     "DD_SEQUENCES",
     "apply_dd_mitigation",
     "insert_dd",
