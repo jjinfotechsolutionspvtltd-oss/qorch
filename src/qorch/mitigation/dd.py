@@ -14,21 +14,38 @@ from dataclasses import replace
 
 from qorch.ir import Circuit, Gate
 
-# Supported DD sequences as tuples of (gate_name, qubit_offset)
-# qubit_offset is relative to the target qubit (always 0 for single-qubit DD)
-DD_SEQUENCES: dict[str, tuple[tuple[str, ...], ...]] = {
-    # XY-4: X Y X Y — cancels dephasing + some coherent errors
+# Supported DD sequences as tuples of (gate_name,)
+DD_SEQUENCES: dict[str, tuple[tuple[str], ...]] = {
     "xy4": (("x",), ("y",), ("x",), ("y",)),
-    # XY-8: XY-4 + inverted XY-4 — better error suppression
     "xy8": (("x",), ("y",), ("x",), ("y",), ("y",), ("x",), ("y",), ("x",)),
-    # CPMG: Y Y — suppresses dephasing only, fewer pulses
     "cpmg": (("y",), ("y",)),
-    # X X — simple Hahn echo
     "hahn": (("x",), ("x",)),
 }
 
-# Typical gate duration in nanoseconds for timing calculations
-_NATIVE_GATE_NS = 50.0  # avg single-qubit gate time
+
+def _find_idle_windows(
+    circuit: Circuit,
+    qubit: int,
+    min_gap: int = 0,
+) -> list[tuple[int, int]]:
+    """Find idle windows on a qubit: (start_index, end_index) in the gate list.
+
+    An idle window exists when a qubit is not involved in consecutive gates.
+    Returns list of (insert_before_gate_index, num_consecutive_idle_slots).
+    """
+    if not circuit.gates:
+        return [(0, 0)]
+
+    ops = [i for i, g in enumerate(circuit.gates) if qubit in g.qubits]
+    if len(ops) < 2:
+        return []
+
+    windows: list[tuple[int, int]] = []
+    for i in range(len(ops) - 1):
+        gap = ops[i + 1] - ops[i] - 1
+        if gap > min_gap:
+            windows.append((ops[i] + 1, gap))
+    return windows
 
 
 def insert_dd(
@@ -38,8 +55,8 @@ def insert_dd(
 ) -> Circuit:
     """Insert dynamical decoupling sequences during idle periods.
 
-    For each qubit, finds the first and last gate it participates in,
-    then fills the pre-idle and inter-gate gaps with DD refocusing pulses.
+    For each target qubit, finds idle windows (gaps between consecutive gates
+    where the qubit is not used) and fills them with DD refocusing pulses.
 
     ``sequence``: one of ``'xy4'``, ``'xy8'``, ``'cpmg'``, ``'hahn'``.
     ``qubits``: subset of qubits to protect (None = all qubits).
@@ -47,28 +64,29 @@ def insert_dd(
     if sequence not in DD_SEQUENCES:
         raise ValueError(f"unknown DD sequence: {sequence!r}. Options: {list(DD_SEQUENCES)}")
 
-    seq = DD_SEQUENCES[sequence]
+    seq: tuple[tuple[str], ...] = DD_SEQUENCES[sequence]
     target_qubits = set(qubits) if qubits else set(range(circuit.num_qubits))
-    n_gates = len(circuit.gates)
-    if n_gates < 2:
-        return circuit
 
     new_gates = list(circuit.gates)
 
-    for q in sorted(target_qubits):
-        ops = [i for i, g in enumerate(circuit.gates) if q in g.qubits]
-        if len(circuit.gates) < 2:
+    # Work from last qubit to first so insertion indices stay valid
+    for q in sorted(target_qubits, reverse=True):
+        windows = _find_idle_windows(circuit, q)
+        if not windows:
+            # Pre-idle: insert DD before the first gate
+            ops = [i for i, g in enumerate(circuit.gates) if q in g.qubits]
+            if ops and ops[0] > 0:
+                dd = [Gate(name, (q,)) for name, in seq]
+                new_gates[ops[0]:ops[0]] = dd
+            elif not ops:
+                dd = [Gate(name, (q,)) for name, in seq]
+                new_gates.extend(dd)
             continue
 
-        # Only pre-idle if qubit's first gate is not at index 0
-        dd_gates = [Gate(name, (q,)) for name, in seq]
-        if ops and ops[0] > 0:
-            insert_pos = ops[0]
-            new_gates[insert_pos:insert_pos] = dd_gates
-            ops = [i + len(seq) for i in ops]
-        elif not ops:
-            # Qubit never used — append DD at end
-            new_gates.extend(dd_gates)
+        # Insert DD in each idle window (reverse order so indices stay valid)
+        for insert_pos, _ in reversed(windows):
+            dd = [Gate(name, (q,)) for name, in seq]
+            new_gates[insert_pos:insert_pos] = dd
 
     return replace(circuit, gates=tuple(new_gates))
 
@@ -79,11 +97,6 @@ def apply_dd_mitigation(
     sequence: str = "xy4",
     shots: int = 8192,
 ) -> dict[str, int]:
-    """Run a circuit with DD inserted and return the measurement counts.
-
-    Usage::
-        circuit = Circuit(2).h(0).cx(0, 1)
-        dd_counts = apply_dd_mitigation(circuit, noisy_backend, sequence="xy4", shots=4000)
-    """
+    """Run a circuit with DD inserted and return the measurement counts."""
     dd_circuit = insert_dd(circuit, sequence=sequence)
     return backend.run(dd_circuit, shots=shots).counts

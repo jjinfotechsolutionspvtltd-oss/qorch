@@ -106,6 +106,10 @@ this script's docstring.
 """
 
 
+_MIN_READOUT_REDUCTION_PCT = 40.0
+_MIN_ZNE_REDUCTION_PCT = 20.0
+
+
 def main() -> None:
     readout = readout_benchmark()
     zne = zne_benchmark()
@@ -120,6 +124,22 @@ def main() -> None:
         zne["raw_err"], zne["mitigated_err"],
         _pct(zne["raw_err"], zne["mitigated_err"])))
     print(f"Wrote {out}")
+
+    # Auto-regression checks
+    exit_code = 0
+    if readout["raw_err"] > 0:
+        pct = (1 - readout["mitigated_err"] / readout["raw_err"]) * 100
+        if pct < _MIN_READOUT_REDUCTION_PCT:
+            print(f"FAIL: Readout reduction {pct:.1f}% < {_MIN_READOUT_REDUCTION_PCT:.0f}%")
+            exit_code = 1
+    if zne["raw_err"] > 0:
+        pct = (1 - zne["mitigated_err"] / zne["raw_err"]) * 100
+        if pct < _MIN_ZNE_REDUCTION_PCT:
+            print(f"FAIL: ZNE reduction {pct:.1f}% < {_MIN_ZNE_REDUCTION_PCT:.0f}%")
+            exit_code = 1
+    if exit_code:
+        print("Benchmark regression threshold(s) not met")
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

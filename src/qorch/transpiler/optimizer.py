@@ -46,6 +46,9 @@ def _cancel_self_inverse(gates: list[Gate]) -> list[Gate]:
         return gates
     result: list[Gate] = [gates[0]]
     for g in gates[1:]:
+        if not result:
+            result.append(g)
+            continue
         prev = result[-1]
         if (
             prev.name == g.name

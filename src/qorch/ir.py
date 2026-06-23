@@ -7,6 +7,7 @@ Bit-ordering convention: in a result bitstring, the leftmost character is qubit 
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, replace
 
@@ -100,6 +101,28 @@ class Circuit:
     def measure(self, *qubits: int) -> "Circuit":
         return replace(self, measured=self.measured + qubits)
 
+    # --- JSON serialization ------------------------------------------------
+    def to_json(self) -> str:
+        """Serialize to a JSON string."""
+        data = {
+            "num_qubits": self.num_qubits,
+            "gates": [
+                {"name": g.name, "qubits": list(g.qubits), "params": list(g.params)}
+                for g in self.gates
+            ],
+            "measured": list(self.measured),
+        }
+        return json.dumps(data, indent=2)
+
+    @classmethod
+    def from_json(cls, text: str) -> "Circuit":
+        """Deserialize from a JSON string."""
+        data = json.loads(text)
+        c = cls(num_qubits=data["num_qubits"], measured=tuple(data.get("measured", [])))
+        for g in data["gates"]:
+            c = c._add(g["name"], *g["qubits"], params=tuple(g.get("params", [])))
+        return c
+
 
 # --- OpenQASM 3 (subset) ingestion ---------------------------------------
 _QUBIT_DECL = re.compile(r"qubit\[(\d+)\]\s+(\w+)\s*;")
@@ -109,6 +132,32 @@ _CX = re.compile(r"cx\s+\w+\[(\d+)\]\s*,\s*\w+\[(\d+)\]\s*;")
 _SWAP = re.compile(r"swap\s+\w+\[(\d+)\]\s*,\s*\w+\[(\d+)\]\s*;")
 _MS = re.compile(r"ms\(\s*([\d.]+)\s*\)\s+\w+\[(\d+)\]\s*,\s*\w+\[(\d+)\]\s*;")
 _MEASURE = re.compile(r"(?:\w+\s*=\s*)?measure\s+\w+\[(\d+)\]\s*;")
+
+
+def to_qasm3(circuit: Circuit) -> str:
+    """Emit a ``Circuit`` as an OpenQASM 3 string.
+
+    Produces standard QASM 3 with ``qubit[n] q;``, gate calls, and ``measure``.
+    """
+    n = circuit.num_qubits
+    lines = [
+        "OPENQASM 3.0;",
+        f"qubit[{n}] q;",
+    ]
+    for g in circuit.gates:
+        qstr = ", ".join(f"q[{q}]" for q in g.qubits)
+        if g.params:
+            pstr = ", ".join(f"{p:.10g}" for p in g.params)
+            lines.append(f"{g.name}({pstr}) {qstr};")
+        else:
+            lines.append(f"{g.name} {qstr};")
+    for q in circuit.readout_qubits:
+        lines.append(f"measure q[{q}];")
+    if not circuit.readout_qubits:
+        for q in range(n):
+            lines.append(f"measure q[{q}];")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def from_qasm3(text: str) -> Circuit:
