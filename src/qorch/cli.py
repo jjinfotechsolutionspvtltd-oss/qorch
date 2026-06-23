@@ -194,6 +194,7 @@ def cmd_list(args: argparse.Namespace) -> None:
     print("  sched      — Batch-schedule multiple circuits")
     print("  report     — Circuit depth, gate count, fidelity analysis")
     print("  certify    — Run QPU certification suite")
+    print("  qv-sweep   — Quantum Volume sweep across widths")
     print("  list       — This help")
 
 
@@ -269,6 +270,30 @@ def cmd_certify(args: argparse.Namespace) -> None:
         print(f"    (need >=2 qubits, backend has {nq})")
 
     print()
+
+
+def cmd_qv_sweep(args: argparse.Namespace) -> None:
+    """Run a Quantum Volume sweep across qubit widths."""
+    backend = _build_backend(args.backend, seed=args.seed)
+    from qorch.benchmarking import qv_sweep
+
+    result = qv_sweep(
+        backend,
+        start_width=args.start,
+        end_width=args.end,
+        trials=args.trials,
+        shots=args.shots,
+        seed=args.seed,
+    )
+
+    print(f"QV Sweep on {result.quantum_volume} (max passing width = {result.max_passing_width})")
+    print()
+    print(f"{'Width':>6}  {'Depth':>6}  {'HOP':>8}  {'Status':>10}")
+    print("-" * 40)
+    for r in result.results:
+        status = "PASS" if r.success else ("FAIL" if r.success is False else "N/A")
+        hop = f"{r.heavy_output_probability:.4f}" if r.heavy_output_probability is not None else "N/A"
+        print(f"{r.width:>6}  {r.depth:>6}  {hop:>8}  {status:>10}")
 
 
 def cmd_transpile(args: argparse.Namespace) -> None:
@@ -362,6 +387,13 @@ def main() -> None:
     cert_p.add_argument("--backend", default="local-simulator", help="Backend name")
     cert_p.add_argument("--shots", type=int, default=4096, help="Shots per benchmark")
 
+    qv_p = sub.add_parser("qv-sweep", help="Quantum Volume sweep across widths")
+    qv_p.add_argument("--backend", default="local-simulator", help="Backend name")
+    qv_p.add_argument("--start", type=int, default=2, help="Starting width")
+    qv_p.add_argument("--end", type=int, default=None, help="Ending width (default: backend qubits)")
+    qv_p.add_argument("--trials", type=int, default=10, help="Trials per width")
+    qv_p.add_argument("--shots", type=int, default=4096, help="Shots per trial")
+
     sched_p = sub.add_parser("sched", help="Batch-schedule multiple circuits")
     sched_p.add_argument("--spec", required=True, nargs="+", help="Circuits as label:gates or path/to/file.qasm")
     sched_p.add_argument("--backends", default="local-simulator", help="Comma-separated backends")
@@ -384,6 +416,8 @@ def main() -> None:
         cmd_list(args)
     elif args.command == "certify":
         cmd_certify(args)
+    elif args.command == "qv-sweep":
+        cmd_qv_sweep(args)
     else:
         parser.print_help()
 

@@ -2,7 +2,7 @@
 
 from qorch import Circuit
 from qorch.transpiler import (
-    decompose, route, CouplingMap,
+    decompose, route, CouplingMap, route_lookahead,
     IIT_JODHPUR_ION_TRAP, TIFR_SUPERCONDUCTING,
 )
 
@@ -102,3 +102,117 @@ def test_routing_preserves_bell_state():
     routed = route(bell, cmap)
     result = LocalSimulator(seed=42).run(routed, shots=2000)
     assert set(result.counts) <= {"0000", "0011"}
+
+
+# ── SabreSWAP lookahead router ───────────────────────────────────────────
+
+
+def test_lookahead_baseline_no_routing_needed():
+    cmap = CouplingMap(edges=((0, 1),))
+    c = Circuit(2).h(0).cx(0, 1)
+    routed = route_lookahead(c, cmap)
+    assert len(routed.gates) == len(c.gates)
+
+
+def test_lookahead_empty_edges_noop():
+    cmap = CouplingMap(edges=())
+    c = Circuit(2).cx(0, 1)
+    routed = route_lookahead(c, cmap)
+    assert len(routed.gates) == len(c.gates)
+
+
+def test_lookahead_empty_circuit_noop():
+    cmap = CouplingMap(edges=((0, 1),))
+    c = Circuit(2)
+    routed = route_lookahead(c, cmap)
+    assert len(routed.gates) == 0
+
+
+def test_lookahead_routes_through_linear_chain():
+    cmap = CouplingMap(edges=((0, 1), (1, 0), (1, 2), (2, 1)))
+    c = Circuit(3).h(0).cx(0, 2)
+    routed = route_lookahead(c, cmap)
+    names = [g.name for g in routed.gates]
+    assert "swap" in names
+    assert "cx" in names
+
+
+def test_lookahead_disconnected_graph_raises():
+    cmap = CouplingMap(edges=((0, 1),))
+    c = Circuit(3).cx(0, 2)
+    try:
+        route_lookahead(c, cmap)
+        assert False
+    except ValueError:
+        pass
+
+
+def test_lookahead_preserves_semantics_via_sim():
+    from qorch import LocalSimulator
+    cmap = CouplingMap(edges=((0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2)))
+    c = Circuit(4).h(0).cx(0, 3)
+    routed = route_lookahead(c, cmap)
+    result = LocalSimulator(seed=42).run(routed, shots=1000)
+    assert set(result.counts) <= {"0000", "0011"}
+
+
+def test_lookahead_fewer_swaps_than_greedy():
+    cmap = CouplingMap(edges=((0, 1), (1, 0), (0, 2), (2, 0), (1, 3), (3, 1), (2, 3), (3, 2)))
+    c = Circuit(4).cx(0, 3).cx(1, 2).cx(0, 3)
+    greedy_r = route(c, cmap)
+    lookahead_r = route_lookahead(c, cmap)
+    greedy_swaps = sum(1 for g in greedy_r.gates if g.name == "swap")
+    lookahead_swaps = sum(1 for g in lookahead_r.gates if g.name == "swap")
+    assert lookahead_swaps <= greedy_swaps
+
+
+# ── Clifford+T decomposition ──────────────────────────────────────────
+
+
+class TestCliffordT:
+    def test_native_gates_passthrough(self):
+        from qorch.transpiler.decompose import decompose_to_clifford_t
+        c = Circuit(2).h(0).cx(0, 1).t(0)
+        result, tc, td = decompose_to_clifford_t(c)
+        assert len(result.gates) == len(c.gates)
+
+    def test_rz_pi_over_4_to_one_t(self):
+        from qorch.transpiler.decompose import decompose_to_clifford_t
+        c = Circuit(1).rz(0, 3.14159 / 4)
+        result, tc, td = decompose_to_clifford_t(c)
+        assert tc == 1
+
+    def test_rz_pi_over_2_to_two_t(self):
+        from qorch.transpiler.decompose import decompose_to_clifford_t
+        c = Circuit(1).rz(0, 3.14159 / 2)
+        result, tc, td = decompose_to_clifford_t(c)
+        assert tc == 2
+
+    def test_x_decomposes_to_h_zh(self):
+        from qorch.transpiler.decompose import decompose_to_clifford_t
+        c = Circuit(1).x(0)
+        result, tc, td = decompose_to_clifford_t(c)
+        assert all(g.name in ("h", "cx", "t") for g in result.gates)
+
+    def test_all_gates_become_clifford_t(self):
+        from qorch.transpiler.decompose import decompose_to_clifford_t
+        native = {"h", "cx", "t"}
+        c = Circuit(4).h(0).x(1).y(2).z(3).sx(0).cx(1, 2).swap(2, 3).rz(0, 0.5).rx(1, 0.3)
+        result, tc, td = decompose_to_clifford_t(c)
+        for g in result.gates:
+            assert g.name in native, f"{g.name} not in Clifford+T"
+        assert tc >= 0
+
+    def test_t_depth_parallel(self):
+        from qorch.transpiler.decompose import decompose_to_clifford_t
+        c = Circuit(3).t(0).t(1).t(2)
+        result, tc, td = decompose_to_clifford_t(c)
+        assert td == 1
+        assert tc == 3
+
+    def test_t_depth_sequential(self):
+        from qorch.transpiler.decompose import decompose_to_clifford_t
+        c = Circuit(1).t(0).t(0).t(0)
+        result, tc, td = decompose_to_clifford_t(c)
+        assert td == 3
+        assert tc == 3

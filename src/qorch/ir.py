@@ -13,8 +13,9 @@ from dataclasses import dataclass, replace
 
 # Gates the slice understands. Adapters/transpilers may lower these further.
 # Extended for transpiler: sx, rz, rx, ry, swap, ms (Mølmer–Sørensen for ion trap)
+# t (Clifford+T) added for fault-tolerant decomposition
 SUPPORTED_GATES: frozenset[str] = frozenset({
-    "h", "x", "y", "z", "cx", "sx", "rz", "rx", "ry", "swap", "ms", "id"
+    "h", "x", "y", "z", "cx", "sx", "rz", "rx", "ry", "swap", "ms", "id", "t"
 })
 
 
@@ -82,6 +83,9 @@ class Circuit:
 
     def id(self, q: int) -> "Circuit":
         return self._add("id", q)
+
+    def t(self, q: int) -> "Circuit":
+        return self._add("t", q)
 
     def rz(self, q: int, theta: float) -> "Circuit":
         return self._add("rz", q, params=(theta,))

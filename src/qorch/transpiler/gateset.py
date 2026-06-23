@@ -51,3 +51,12 @@ DRDO_MIRAI = IndianGateSet(
     ),
     num_qubits=6,
 )
+
+# Clifford+T: fault-tolerant gate set
+# T = Rz(pi/4) — expensive (magic state distillation)
+# H, CX are cheap Clifford gates
+CLIFFORD_T = IndianGateSet(
+    name="clifford-t",
+    description="Clifford+T fault-tolerant gate set",
+    basis_gates=("h", "cx", "t"),
+)

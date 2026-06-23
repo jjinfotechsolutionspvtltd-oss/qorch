@@ -95,6 +95,150 @@ def _swap_to_ms() -> DecompRule:
     return rule
 
 
+def _rx_to_h_rz_h(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    q = qubits[0]
+    theta = params[0] if params else 0.0
+    return [Gate("h", (q,)), Gate("rz", (q,), (theta,)), Gate("h", (q,))]
+
+
+def _ry_to_rz_rx_rz(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    q = qubits[0]
+    theta = params[0] if params else 0.0
+    return [
+        Gate("rz", (q,), (-math.pi / 2,)),
+        Gate("rx", (q,), (theta,)),
+        Gate("rz", (q,), (math.pi / 2,)),
+    ]
+
+
+def _x_to_h_zh(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    q = qubits[0]
+    return [Gate("h", (q,)), Gate("z", (q,)), Gate("h", (q,))]
+
+
+def _y_to_via_t(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """y → S X S† where S = T², S† = T⁶."""
+    q = qubits[0]
+    return [Gate("t", (q,)), Gate("t", (q,)), Gate("x", (q,)),
+            Gate("t", (q,)), Gate("t", (q,)), Gate("t", (q,)),
+            Gate("t", (q,)), Gate("t", (q,)), Gate("t", (q,))]
+
+
+def _z_to_tttt(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """z → T⁴ — decompose Z into Clifford+T."""
+    q = qubits[0]
+    return [Gate("t", (q,)), Gate("t", (q,)), Gate("t", (q,)), Gate("t", (q,))]
+
+
+def _sx_to_h_thth(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """sx → H T² H — Rx(π/2) as H Rz(π/2) H."""
+    q = qubits[0]
+    return [Gate("h", (q,)), Gate("t", (q,)), Gate("t", (q,)), Gate("h", (q,))]
+
+
+def _rz_to_clifford_t(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """Decompose Rz(θ) into H, T gates (Clifford+T).
+
+    For θ = k·π/4 exactly: uses T^k.
+    For arbitrary θ: uses a depth-limited BFS over H/T sequences.
+    """
+    q = qubits[0]
+    theta = params[0] if params else 0.0
+    target = theta * 4 / math.pi
+    k = round(target)
+
+    if abs(target - k) < 1e-12:
+        k_mod = k % 8
+        if k_mod == 0:
+            return []
+        gates: list[Gate] = []
+        for _ in range(k_mod):
+            gates.append(Gate("t", (q,)))
+        return gates
+
+    import cmath
+    from collections import deque
+
+    def _target_mat(angle: float) -> tuple[complex, ...]:
+        return (cmath.exp(-1j * angle / 2), 0j, 0j, cmath.exp(1j * angle / 2))
+
+    def _apply_h(m: tuple[complex, ...]) -> tuple[complex, ...]:
+        a, b, c, d = m
+        s = 1 / math.sqrt(2)
+        return (s * a + s * c, s * b + s * d, s * a - s * c, s * b - s * d)
+
+    def _apply_t(m: tuple[complex, ...]) -> tuple[complex, ...]:
+        a, b, c, d = m
+        e = cmath.exp(1j * math.pi / 8)
+        return (a * 1 / e, b * 1 / e, c * e, d * e)
+
+    target_mat = _target_mat(theta)
+    best_seq: list[Gate] = []
+    best_fid = -1.0
+
+    qq: deque[tuple[tuple[complex, ...], list[Gate]]] = deque()
+    qq.append(((1j, 0j, 0j, 1j), []))  # | to make complex
+
+    while qq:
+        mat, seq = qq.popleft()
+        fid = 0.5 * abs(
+            mat[0].conjugate() * target_mat[0] +
+            mat[1].conjugate() * target_mat[1] +
+            mat[2].conjugate() * target_mat[2] +
+            mat[3].conjugate() * target_mat[3]
+        )
+        if fid > best_fid:
+            best_fid = fid
+            best_seq = seq
+
+        if fid > 0.99999 or len(seq) >= 8:
+            continue
+
+        h_seq = seq + [Gate("h", (q,))]
+        qq.append((_apply_h(mat), h_seq))
+        t_seq = seq + [Gate("t", (q,))]
+        qq.append((_apply_t(mat), t_seq))
+
+    return best_seq if best_seq else [Gate("t", (q,))]
+
+
+# ── Clifford+T decomposition rule helpers ─────────────────────────────────
+
+
+def _count_t(gates: tuple[Gate, ...]) -> int:
+    """Count T gates in a gate sequence."""
+    return sum(1 for g in gates if g.name == "t")
+
+
+def _t_depth(gates: tuple[Gate, ...], num_qubits: int) -> int:
+    """Compute T-depth (minimum number of T-gate layers)."""
+    t_layers: list[set[int]] = []
+    for g in gates:
+        if g.name == "t":
+            qubit_set = set(g.qubits)
+            placed = False
+            for layer in t_layers:
+                if not layer.intersection(qubit_set):
+                    layer.update(qubit_set)
+                    placed = True
+                    break
+            if not placed:
+                t_layers.append(qubit_set)
+    return len(t_layers)
+
+
+def decompose_to_clifford_t(circuit: Circuit) -> tuple[Circuit, int, int]:
+    """Decompose a circuit into Clifford+T and return (circuit, t_count, t_depth).
+
+    Uses the Clifford+T gate set ({h, cx, t}) as target.
+    """
+    from qorch.transpiler.gateset import CLIFFORD_T
+    result = decompose(circuit, CLIFFORD_T)
+    tc = _count_t(result.gates)
+    td = _t_depth(result.gates, result.num_qubits)
+    return result, tc, td
+
+
 # Registry of decomposition rules keyed by (gate_name, frozenset of native gates).
 # None = gate is already native (passthrough).
 DECOMPOSITION_RULES: dict[tuple[str, frozenset[str]], DecompRule | None] = {
@@ -136,6 +280,27 @@ DECOMPOSITION_RULES: dict[tuple[str, frozenset[str]], DecompRule | None] = {
     # swap → ms rz ms (ion-trap)
     ("swap", frozenset({"ms", "rz"})): _swap_to_ms(),
     ("swap", frozenset({"rx", "ms", "rz"})): _swap_to_ms(),
+    # ry → rz rx rz (general, for native sets with rz+rx)
+    ("ry", frozenset({"rz", "rx"})): _ry_to_rz_rx_rz,
+    ("ry", frozenset({"rz", "rx", "cx"})): _ry_to_rz_rx_rz,
+    ("ry", frozenset({"rz", "rx", "ms"})): _ry_to_rz_rx_rz,
+    ("ry", frozenset({"rz", "rx", "x"})): _ry_to_rz_rx_rz,
+    ("ry", frozenset({"rz", "rx", "cx", "x"})): _ry_to_rz_rx_rz,
+    # rx → h rz h (general)
+    ("rx", frozenset({"rz", "h"})): _rx_to_h_rz_h,
+    ("rx", frozenset({"rz", "h", "cx"})): _rx_to_h_rz_h,
+    # ── Clifford+T rules (target: h, cx, t) ────────────────────────────────
+    ("h", frozenset({"h", "cx", "t"})): None,
+    ("cx", frozenset({"h", "cx", "t"})): None,
+    ("t", frozenset({"h", "cx", "t"})): None,
+    ("rz", frozenset({"h", "cx", "t"})): _rz_to_clifford_t,
+    ("rx", frozenset({"h", "cx", "t"})): _rx_to_h_rz_h,
+    ("ry", frozenset({"h", "cx", "t"})): _ry_to_rz_rx_rz,
+    ("x", frozenset({"h", "cx", "t"})): _x_to_h_zh,
+    ("y", frozenset({"h", "cx", "t"})): _y_to_via_t,
+    ("z", frozenset({"h", "cx", "t"})): _z_to_tttt,
+    ("sx", frozenset({"h", "cx", "t"})): _sx_to_h_thth,
+    ("swap", frozenset({"h", "cx", "t"})): _swap_to_cx(),
 }
 
 
@@ -167,17 +332,22 @@ def _can_decompose(circuit: Circuit, target: IndianGateSet) -> bool:
     return True
 
 
-def decompose(circuit: Circuit, target: IndianGateSet) -> Circuit:
+def decompose(circuit: Circuit, target: IndianGateSet, _depth: int = 0) -> Circuit:
     """Decompose ``circuit`` so every gate is in ``target.basis_gates``.
 
+    Recursively decomposes until all gates are native or max depth is reached.
     Returns a new ``Circuit`` whose gates are all native to the target.
     """
+    if _depth > 20:
+        raise ValueError(f"decomposition did not converge for target {target.basis_gates}")
     native = frozenset(target.basis_gates)
     new_gates: list[Gate] = []
+    any_non_native = False
     for g in circuit.gates:
         if g.name in native:
             new_gates.append(g)
             continue
+        any_non_native = True
         rule = _find_rule(g.name, native)
         if rule is None:
             raise ValueError(
@@ -185,4 +355,6 @@ def decompose(circuit: Circuit, target: IndianGateSet) -> Circuit:
             )
         decomposed = rule(*g.qubits, params=g.params)
         new_gates.extend(decomposed)
-    return replace(circuit, gates=tuple(new_gates))
+    if not any_non_native:
+        return replace(circuit, gates=tuple(new_gates))
+    return decompose(replace(circuit, gates=tuple(new_gates)), target, _depth=_depth + 1)

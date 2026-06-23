@@ -143,7 +143,6 @@ def route(
         for phys, log in physical.items():
             if log == lq:
                 return phys
-        # All qubits are initialized in physical mapping; fallback shouldn't be needed
         return lq  # pragma: no cover
 
     for g in circuit.gates:
@@ -173,3 +172,223 @@ def route(
         new_gates.append(Gate(g.name, (q0_phys, q1_phys), g.params))
 
     return replace(circuit, gates=tuple(new_gates))
+
+
+# ── SabreSWAP lookahead router ───────────────────────────────────────────
+
+
+def _build_dag_deps(
+    gates: tuple[Gate, ...],
+) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+    last_gate_on_qubit: dict[int, int] = {}
+    preds: dict[int, set[int]] = {}
+    succs: dict[int, set[int]] = {}
+    for i, g in enumerate(gates):
+        preds[i] = set()
+        succs[i] = set()
+        for q in g.qubits:
+            if q in last_gate_on_qubit:
+                dep = last_gate_on_qubit[q]
+                preds[i].add(dep)
+                succs[dep].add(i)
+            last_gate_on_qubit[q] = i
+    return preds, succs
+
+
+def _front_layer(
+    gates: tuple[Gate, ...],
+    preds: dict[int, set[int]],
+    executed: set[int],
+) -> set[int]:
+    front: set[int] = set()
+    for i in range(len(gates)):
+        if i in executed:
+            continue
+        if preds[i].issubset(executed):
+            front.add(i)
+    return front
+
+
+def _try_execute_front(
+    gates: tuple[Gate, ...],
+    front: set[int],
+    executed: set[int],
+    edges_set: set[tuple[int, int]],
+    phys_map: dict[int, int],
+    output: list[Gate],
+) -> int:
+    n = 0
+    for i in list(front):
+        g = gates[i]
+        if len(g.qubits) < 2:
+            output.append(g)
+            executed.add(i)
+            front.discard(i)
+            n += 1
+        else:
+            q0 = _logical_to_physical_inv(phys_map, g.qubits[0])
+            q1 = _logical_to_physical_inv(phys_map, g.qubits[1])
+            if (q0, q1) in edges_set:
+                output.append(Gate(g.name, (q0, q1), g.params))
+                executed.add(i)
+                front.discard(i)
+                n += 1
+    return n
+
+
+def _logical_to_physical_inv(m: dict[int, int], logical: int) -> int:
+    for phys, log in m.items():
+        if log == logical:
+            return phys
+    return logical  # pragma: no cover
+
+
+def _extended_set(
+    gates: tuple[Gate, ...],
+    front: set[int],
+    lookahead: int,
+) -> set[int]:
+    seen: set[int] = set(front)
+    ext: set[int] = set()
+    for i in range(len(gates)):
+        if i in seen:
+            continue
+        seen.add(i)
+        ext.add(i)
+        if len(ext) >= lookahead:
+            break
+    return ext
+
+
+def _swap_score(
+    edge: tuple[int, int],
+    gates: tuple[Gate, ...],
+    front: set[int],
+    extended: set[int],
+    edges_set: set[tuple[int, int]],
+    phys_map: dict[int, int],
+    decay: float,
+    dist_cache: dict[tuple[int, int], float],
+) -> float:
+    a, b = edge
+    if a not in phys_map or b not in phys_map:
+        return -1.0
+    _apply_swap(phys_map, a, b)
+    f_score = 0
+    f_dist = 0.0
+    for i in front:
+        g = gates[i]
+        if len(g.qubits) >= 2:
+            q0 = _logical_to_physical_inv(phys_map, g.qubits[0])
+            q1 = _logical_to_physical_inv(phys_map, g.qubits[1])
+            if (q0, q1) in edges_set:
+                f_score += 1
+            else:
+                f_dist -= dist_cache.get((q0, q1), 5)
+    e_score = 0
+    for i in extended:
+        g = gates[i]
+        if len(g.qubits) >= 2:
+            q0 = _logical_to_physical_inv(phys_map, g.qubits[0])
+            q1 = _logical_to_physical_inv(phys_map, g.qubits[1])
+            if (q0, q1) in edges_set:
+                e_score += 1
+    _apply_swap(phys_map, a, b)
+    if f_score + e_score > 0:
+        return decay * f_score + (1.0 - decay) * e_score
+    return f_dist
+
+
+def _build_dist_cache(
+    adj: dict[int, set[int]],
+    nq: int,
+    quality: dict[int, QubitQuality] | None = None,
+) -> dict[tuple[int, int], float]:
+    """Precompute shortest distances between all pairs.
+
+    With ``quality``, edge cost = 1 - avg(gate_fidelity of endpoints),
+    so high-fidelity paths have lower cost. Without quality, each hop costs 1.
+    """
+    cache: dict[tuple[int, int], float] = {}
+    for src in range(nq):
+        if src not in adj:
+            cache[(src, src)] = 0.0
+            continue
+
+        import heapq
+        INF = float("inf")
+        dist: dict[int, float] = {src: 0.0}
+        pq: list[tuple[float, int]] = [(0.0, src)]
+        while pq:
+            d, node = heapq.heappop(pq)
+            if d > dist.get(node, INF):
+                continue
+            cache[(src, node)] = d
+            for nb in adj.get(node, set()):
+                if quality:
+                    f_a = quality.get(node, QubitQuality(1.0)).gate_fidelity
+                    f_b = quality.get(nb, QubitQuality(1.0)).gate_fidelity
+                    w = 1.0 - 0.5 * (f_a + f_b)
+                else:
+                    w = 1.0
+                nd = d + w
+                if nd < dist.get(nb, INF):
+                    dist[nb] = nd
+                    heapq.heappush(pq, (nd, nb))
+    return cache
+
+
+def route_lookahead(
+    circuit: Circuit,
+    coupling_map: CouplingMap,
+    lookahead: int = 20,
+    decay: float = 0.5,
+    qubit_quality: dict[int, QubitQuality] | None = None,
+) -> Circuit:
+    if not coupling_map.edges or not circuit.gates:
+        return circuit
+
+    edges_set = set(coupling_map.edges)
+    adj = _build_adjacency(coupling_map.edges)
+
+    for g in circuit.gates:
+        if len(g.qubits) >= 2:
+            for q in g.qubits:
+                if q not in adj:
+                    raise ValueError(
+                        f"qubit {q} is not in the coupling map "
+                        f"(qubits with edges: {sorted(adj)})"
+                    )
+
+    gates = circuit.gates
+    phys_map: dict[int, int] = {i: i for i in range(circuit.num_qubits)}
+    output: list[Gate] = []
+
+    preds, _succs = _build_dag_deps(gates)
+    executed: set[int] = set()
+    dist_cache = _build_dist_cache(adj, circuit.num_qubits, quality=qubit_quality)
+
+    while len(executed) < len(gates):
+        front = _front_layer(gates, preds, executed)
+
+        n_ex = _try_execute_front(gates, front, executed, edges_set, phys_map, output)
+        if n_ex > 0:
+            continue
+
+        extended = _extended_set(gates, front, lookahead)
+
+        best_edge: tuple[int, int] | None = None
+        best_score = -1e9
+        for a, b in edges_set:
+            score = _swap_score((a, b), gates, front, extended, edges_set, phys_map, decay, dist_cache)
+            if score > best_score:
+                best_score = score
+                best_edge = (a, b)
+
+        if best_edge is None:
+            raise ValueError("no candidate SWAP edge found — is the coupling map connected?")
+
+        output.append(Gate("swap", (best_edge[0], best_edge[1])))
+        _apply_swap(phys_map, best_edge[0], best_edge[1])
+
+    return replace(circuit, gates=tuple(output))

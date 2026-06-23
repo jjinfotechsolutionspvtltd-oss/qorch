@@ -245,6 +245,57 @@ def quantum_volume(
     )
 
 
+# ── 2b. Quantum Volume Sweep ────────────────────────────────────────────
+
+@dataclass
+class QVSweepResult:
+    """Result of a Quantum Volume sweep across multiple widths."""
+
+    results: list[QVResult]
+    max_passing_width: int
+    quantum_volume: int  # = 2^max_passing_width
+
+
+def qv_sweep(
+    backend: Backend,
+    start_width: int = 2,
+    end_width: int | None = None,
+    trials: int = 20,
+    shots: int = 8192,
+    stop_on_fail: bool = True,
+    seed: int | None = None,
+) -> QVSweepResult:
+    """Sweep Quantum Volume across a range of widths.
+
+    Runs ``quantum_volume`` at each width from ``start_width`` to ``end_width``
+    (or until a width fails, if ``stop_on_fail`` is True).
+
+    Returns the maximum QV achieved, defined as 2^{max_passing_width}.
+    """
+    from qorch.backends.base import BackendProperties
+
+    props: BackendProperties = backend.properties()
+    max_qubits = end_width or props.num_qubits
+    max_qubits = min(max_qubits, props.num_qubits)
+
+    sweep_results: list[QVResult] = []
+    last_success = 0
+
+    for w in range(start_width, max_qubits + 1):
+        r = quantum_volume(backend, width=w, shots=shots, trials=trials, seed=seed)
+        sweep_results.append(r)
+        if r.success:
+            last_success = w
+        elif stop_on_fail:
+            break
+
+    return QVSweepResult(
+        results=sweep_results,
+        max_passing_width=last_success,
+        quantum_volume=1 << last_success,
+    )
+
+
 # ── 3. Cross-Entropy Benchmarking ──────────────────────────────────────────
 
 @dataclass
