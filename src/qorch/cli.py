@@ -12,6 +12,7 @@ from qorch.backends.simulator import LocalSimulator
 from qorch.ir import Circuit, from_qasm3
 from qorch.mitigation.readout import ReadoutMitigator
 from qorch.mitigation.zne import expectation_z, zne_expectation
+from qorch.scheduler import BatchJob, Scheduler
 
 
 def _build_backend(name: str, seed: int | None = None) -> Backend:
@@ -141,6 +142,31 @@ def cmd_batch(args: argparse.Namespace) -> None:
         print(f"{result.backend_name:>25}  {result.shots:>6}  {top:>12}  {frac:>6.3f}")
 
 
+def cmd_sched(args: argparse.Namespace) -> None:
+    """Run multiple circuits through the batch scheduler."""
+    backends = [_build_backend(name.strip(), seed=args.seed) for name in args.backends.split(",")]
+    sched = Scheduler(backends=backends)
+    jobs: list[BatchJob] = []
+    for spec in args.spec:
+        if ":" in spec:
+            label, gates_str = spec.split(":", 1)
+            c = _parse_gates(gates_str)
+        else:
+            label = Path(spec).stem
+            c = from_qasm3(Path(spec).read_text())
+        jobs.append(BatchJob(circuit=c, shots=args.shots, label=label))
+    results = sched.run_batch(jobs)
+    print(f"{'Label':>20}  {'Backend':>25}  {'Shots':>6}  {'Top outcome':>12}  {'Frac':>6}")
+    print("-" * 80)
+    for r in results:
+        if r.error:
+            print(f"{r.label:>20}  {'ERROR':>25}  {'—':>6}  {r.error:>30}")
+        else:
+            top = max(r.result.counts, key=r.result.counts.get)
+            frac = r.result.counts[top] / r.result.shots
+            print(f"{r.label:>20}  {r.backend_name:>25}  {r.result.shots:>6}  {top:>12}  {frac:>6.3f}")
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     circuit = _load_circuit(args.circuit, args.gates)
     from qorch.analysis import circuit_report, format_report
@@ -165,8 +191,84 @@ def cmd_list(args: argparse.Namespace) -> None:
     print("  mitigate   — Run with error mitigation")
     print("  transpile  — Decompose for an Indian QPU")
     print("  batch      — Compare backends on the same circuit")
+    print("  sched      — Batch-schedule multiple circuits")
     print("  report     — Circuit depth, gate count, fidelity analysis")
+    print("  certify    — Run QPU certification suite")
     print("  list       — This help")
+
+
+def cmd_certify(args: argparse.Namespace) -> None:
+    """Run the full QPU certification suite."""
+    backend = _build_backend(args.backend, seed=args.seed)
+    props = backend.properties()
+    nq = props.num_qubits
+
+    print("=" * 52)
+    print("  QPU Certification Report")
+    print(f"  Backend: {backend.name}")
+    print(f"  Qubits:  {nq}")
+    print(f"  Shots:   {args.shots}")
+    print("=" * 52)
+
+    # 1 — Bell state fidelity
+    print("\n  -- 1. Bell State Fidelity --")
+    from qorch.entanglement import bell_state_fidelity
+    bell = bell_state_fidelity(backend, shots=args.shots)
+    if bell.fidelity is not None:
+        status = "PASS" if bell.fidelity > 0.5 else "FAIL"
+        print(f"    F = {bell.fidelity:.4f}  [{status}] (threshold: 0.5)")
+    else:
+        print("    F = N/A")
+
+    # 2 — CHSH S-value
+    print("\n  -- 2. CHSH S-Value --")
+    from qorch.entanglement import chsh_s_value
+    chsh = chsh_s_value(backend, shots=args.shots)
+    if chsh.s_value is not None:
+        status = "VIOLATION" if chsh.violation else "no violation"
+        print(f"    S = {chsh.s_value:.4f}  [{status}] (threshold: 2.0)")
+    else:
+        print("    S = N/A")
+
+    # 3 — Entanglement witness
+    print("\n  -- 3. Entanglement Witness --")
+    from qorch.entanglement import entanglement_witness
+    ew = entanglement_witness(backend, shots=args.shots)
+    if ew.witness_value is not None:
+        status = "ENTANGLED" if ew.entangled else "separable"
+        print(f"    W = {ew.witness_value:.4f}  [{status}] (threshold: 0)")
+    else:
+        print("    W = N/A")
+
+    # 4 — Randomized benchmarking (1-qubit)
+    print("\n  -- 4. Randomized Benchmarking (1Q) --")
+    from qorch.benchmarking import randomized_benchmarking
+    rb = randomized_benchmarking(backend, depths=(1, 2, 4, 8), circuits_per_depth=3, shots=args.shots // 4, seed=args.seed)
+    if rb.estimated_error_rate is not None:
+        print(f"    Error rate r = {rb.estimated_error_rate:.6f}")
+        print(f"    Gate fidelity ~ {1 - rb.estimated_error_rate:.6f}")
+    else:
+        print("    Error rate = N/A (need >=2 depths)")
+
+    # 5 — Quantum Volume
+    print("\n  -- 5. Quantum Volume --")
+    if nq >= 2:
+        from qorch.benchmarking import quantum_volume
+        w = min(4, nq)
+        qv = quantum_volume(backend, width=w, shots=args.shots // 2, trials=5, seed=args.seed)
+        if qv.heavy_output_probability is not None:
+            hop_str = f"HOP = {qv.heavy_output_probability:.4f}"
+            if qv.success:
+                hop_str += f"  [QV >= {2**w}]"
+            else:
+                hop_str += f"  [QV < {2**w}]"
+            print(f"    {hop_str} (threshold: 2/3)")
+        else:
+            print("    HOP = N/A")
+    else:
+        print(f"    (need >=2 qubits, backend has {nq})")
+
+    print()
 
 
 def cmd_transpile(args: argparse.Namespace) -> None:
@@ -256,6 +358,15 @@ def main() -> None:
 
     sub.add_parser("list", help="List backends and techniques")
 
+    cert_p = sub.add_parser("certify", help="Run QPU certification suite")
+    cert_p.add_argument("--backend", default="local-simulator", help="Backend name")
+    cert_p.add_argument("--shots", type=int, default=4096, help="Shots per benchmark")
+
+    sched_p = sub.add_parser("sched", help="Batch-schedule multiple circuits")
+    sched_p.add_argument("--spec", required=True, nargs="+", help="Circuits as label:gates or path/to/file.qasm")
+    sched_p.add_argument("--backends", default="local-simulator", help="Comma-separated backends")
+    sched_p.add_argument("--shots", type=int, default=2048, help="Shots per circuit")
+
     args = parser.parse_args()
     if args.command == "run":
         cmd_run(args)
@@ -263,12 +374,16 @@ def main() -> None:
         cmd_mitigate(args)
     elif args.command == "batch":
         cmd_batch(args)
+    elif args.command == "sched":
+        cmd_sched(args)
     elif args.command == "report":
         cmd_report(args)
     elif args.command == "transpile":
         cmd_transpile(args)
     elif args.command == "list":
         cmd_list(args)
+    elif args.command == "certify":
+        cmd_certify(args)
     else:
         parser.print_help()
 

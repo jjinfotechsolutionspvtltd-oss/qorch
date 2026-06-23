@@ -70,6 +70,21 @@ class ReadoutNoise:
     p1_given0: float = 0.0  # P(report 1 | true 0)
     p0_given1: float = 0.0  # P(report 0 | true 1)
 
+    @classmethod
+    def from_readout_fidelity(
+        cls,
+        readout_fidelity: float,
+        asymmetric: bool = True,
+    ) -> "ReadoutNoise":
+        """Build readout noise model from average readout fidelity.
+
+        With asymmetric=True (default), p(0|1) > p(1|0) reflecting T1 decay.
+        """
+        err = 1.0 - readout_fidelity
+        if asymmetric:
+            return cls(p1_given0=err * 0.3, p0_given1=err * 0.7)
+        return cls(p1_given0=err * 0.5, p0_given1=err * 0.5)
+
     @property
     def active(self) -> bool:
         return self.p1_given0 > 0.0 or self.p0_given1 > 0.0
@@ -86,6 +101,11 @@ class GateNoise:
     """
 
     depolarizing_prob: float = 0.0
+
+    @classmethod
+    def from_gate_fidelity(cls, gate_fidelity: float) -> "GateNoise":
+        """Build gate noise from per-gate average fidelity."""
+        return cls(depolarizing_prob=max(0.0, 1.0 - gate_fidelity))
 
     @property
     def active(self) -> bool:

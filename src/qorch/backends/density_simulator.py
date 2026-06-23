@@ -74,6 +74,37 @@ class NoiseChannel:
     amplitude_damping_gamma: float = 0.0   # T1 relaxation rate
     phase_damping_lambda: float = 0.0      # T2 dephasing rate
 
+    @classmethod
+    def from_gate_fidelity(
+        cls,
+        gate_fidelity: float,
+        t1_us: float = 0.0,
+        t2_us: float = 0.0,
+        gate_time_us: float = 0.5,
+    ) -> "NoiseChannel":
+        """Build noise model from device calibration data.
+
+        Args:
+            gate_fidelity: per-gate average fidelity (0-1)
+            t1_us: T1 relaxation time in microseconds (0 = ignore)
+            t2_us: T2 dephasing time in microseconds (0 = ignore)
+            gate_time_us: gate duration in microseconds
+        """
+        dep_prob = max(0.0, 1.0 - gate_fidelity)
+        amp_gamma = 0.0
+        phase_lam = 0.0
+        if t1_us > 0 and gate_time_us > 0:
+            amp_gamma = 1.0 - math.exp(-gate_time_us / t1_us)
+        if t2_us > 0 and gate_time_us > 0:
+            t_phi = 1.0 / (1.0 / t2_us - 1.0 / (2.0 * t1_us)) if t1_us > 0 and 1.0 / t2_us > 1.0 / (2.0 * t1_us) else 0.0
+            if t_phi > 0:
+                phase_lam = 1.0 - math.exp(-gate_time_us / t_phi)
+        return cls(
+            depolarizing_prob=dep_prob,
+            amplitude_damping_gamma=amp_gamma,
+            phase_damping_lambda=phase_lam,
+        )
+
 
 class DensitySimulator(Backend):
     """Density-matrix simulator with exact noise channels.

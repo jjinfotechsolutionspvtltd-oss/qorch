@@ -26,10 +26,42 @@ def first_available(circuit: Circuit, backends: list[Backend]) -> Backend:
     raise ValueError(f"no registered backend can run {circuit.num_qubits} qubits")
 
 
+def _best_fit(circuit: Circuit, backends: list[Backend]) -> Backend:
+    """Pick the backend that best fits the circuit (minimal qubit waste)."""
+    nq = circuit.num_qubits
+    best: Backend | None = None
+    best_waste = float("inf")
+    for backend in backends:
+        avail = backend.properties().num_qubits
+        if avail >= nq:
+            waste = avail - nq
+            if waste < best_waste:
+                best_waste = waste
+                best = backend
+    if best is None:
+        raise ValueError(f"no registered backend can run {nq} qubits")
+    return best
+
+
 @dataclass
 class Job:
     circuit: Circuit
     shots: int
+
+
+@dataclass
+class BatchJob:
+    circuit: Circuit
+    shots: int
+    label: str = ""
+
+
+@dataclass
+class BatchResult:
+    label: str
+    backend_name: str
+    result: JobResult | None = None
+    error: str | None = None
 
 
 @dataclass
@@ -48,4 +80,20 @@ class Scheduler:
             job = self._queue.popleft()
             backend = self.policy(job.circuit, self.backends)
             results.append(backend.run(job.circuit, job.shots))
+        return results
+
+    def run_batch(self, jobs: list[BatchJob]) -> list[BatchResult]:
+        """Run a batch of circuits, grouping by best-fit backend.
+
+        Each circuit is routed to the backend that fits it best (minimum qubit waste).
+        Returns a list of ``BatchResult`` with results or error messages.
+        """
+        results: list[BatchResult] = []
+        for bj in jobs:
+            try:
+                backend = _best_fit(bj.circuit, self.backends)
+                result = backend.run(bj.circuit, bj.shots)
+                results.append(BatchResult(label=bj.label, backend_name=backend.name, result=result))
+            except ValueError as e:
+                results.append(BatchResult(label=bj.label, backend_name="", error=str(e)))
         return results

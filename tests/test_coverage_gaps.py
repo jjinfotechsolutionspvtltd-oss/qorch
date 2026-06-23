@@ -529,3 +529,51 @@ class TestCLIEdgeCases:
             assert False
         except ValueError:
             pass
+
+    def test_certify_runs_without_error(self):
+        from qorch.cli import cmd_certify
+        import argparse
+        args = argparse.Namespace(backend="local-simulator", shots=128, seed=0)
+        cmd_certify(args)
+
+    def test_certify_runs_noisy_backend(self):
+        from qorch.cli import cmd_certify
+        import argparse
+        args = argparse.Namespace(backend="local-simulator", shots=128, seed=42)
+        cmd_certify(args)
+
+    def test_main_help_prints(self):
+        from qorch.cli import main
+        import sys
+        try:
+            sys.argv = ["qorch"]
+            main()
+        except SystemExit:
+            pass
+
+    def test_sched_runs_gate_specs(self):
+        from qorch.cli import cmd_sched
+        import argparse
+        args = argparse.Namespace(spec=["bell:h0,measure01", "ghz:h0,cx01,measure01"], backends="local-simulator", shots=64, seed=0)
+        cmd_sched(args)
+
+    def test_sched_with_file_spec(self, tmp_path):
+        from qorch.cli import cmd_sched
+        import argparse
+        qasm = tmp_path / "test.qasm"
+        qasm.write_text('OPENQASM 3.0;\nqubit[1] q;\nh q[0];\nmeasure q[0];\n')
+        args = argparse.Namespace(spec=[str(qasm)], backends="local-simulator", shots=64, seed=0)
+        cmd_sched(args)
+
+
+# ── main module coverage ─────────────────────────────────────────────────
+
+class TestMainModule:
+    def test_main_module_calls_main(self):
+        from qorch.__main__ import main as m
+        import sys
+        try:
+            sys.argv = ["qorch"]
+            m()
+        except SystemExit:
+            pass
