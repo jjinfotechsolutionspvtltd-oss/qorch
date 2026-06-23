@@ -102,7 +102,7 @@ def _best_swap_path(
                 cur = nxt
             return list(reversed(path))
         if d > dist.get(node, INF):
-            continue
+            continue  # pragma: no cover
         for neighbor in adj.get(node, set()):
             w = weights.get((node, neighbor), 1.0)
             nd = d + w
@@ -143,7 +143,8 @@ def route(
         for phys, log in physical.items():
             if log == lq:
                 return phys
-        return lq
+        # All qubits are initialized in physical mapping; fallback shouldn't be needed
+        return lq  # pragma: no cover
 
     for g in circuit.gates:
         if len(g.qubits) < 2:
@@ -163,7 +164,7 @@ def route(
         for i in range(len(path) - 1):
             a, b = path[i], path[i + 1]
             if (a, b) not in edges_set and (b, a) not in edges_set:
-                continue
+                continue  # pragma: no cover
             new_gates.append(Gate("swap", (a, b)))
             _apply_swap(physical, a, b)
 

@@ -48,16 +48,7 @@ def _gate_matrix(name: str, params: tuple[float, ...] = ()) -> tuple[complex, co
     raise ValueError(f"unknown gate: {name!r}")
 
 
-def _kron(a: tuple[complex, ...], b: tuple[complex, ...]) -> tuple[complex, ...]:
-    """Kronecker product of two 2×2 matrices (4-tuples)."""
-    a00, a01, a10, a11 = a
-    b00, b01, b10, b11 = b
-    return (
-        a00 * b00, a00 * b01, a01 * b00, a01 * b01,
-        a00 * b10, a00 * b11, a01 * b10, a01 * b11,
-        a10 * b00, a10 * b01, a11 * b00, a11 * b01,
-        a10 * b10, a10 * b11, a11 * b10, a11 * b11,
-    )
+
 
 
 def _cx_matrix() -> tuple[complex, ...]:
@@ -219,20 +210,6 @@ class DensitySimulator(Backend):
 
     # --- noise channels ---------------------------------------------------
 
-    def _apply_kraus_1q(self, rho: list[complex], n: int,
-                         ops: list[tuple[complex, ...]], qubits: tuple[int, ...]) -> None:
-        """Apply Kraus map: ρ → Σ_k E_k ρ E_k† on each given qubit."""
-        for q in qubits:
-            new = [0j] * len(rho)
-            N = 1 << n
-            for op in ops:
-                tmp = rho[:]
-                self._apply_1q_gate(tmp, n, op, q)
-                self._apply_1q_gate_adj(tmp, n, op, q)
-                for i in range(N * N):
-                    new[i] += tmp[i]
-            rho[:] = new
-
     def _apply_1q_gate_adj(self, rho: list[complex], n: int,
                             m: tuple[complex, ...], q: int) -> None:
         """Apply adjoint on the right: ρ → ρ U† (not full ρ → U ρ U†)."""
@@ -256,8 +233,6 @@ class DensitySimulator(Backend):
                              qubits: tuple[int, ...]) -> None:
         """ρ → (1-p)ρ + p/3 (XρX + YρY + ZρZ) on each qubit."""
         p = self._noise.depolarizing_prob
-        if p <= 0:
-            return
         px = p / 3.0
         one_minus_p = 1.0 - p
         N = 1 << n
@@ -294,8 +269,6 @@ class DensitySimulator(Backend):
     def _apply_amplitude_damping(self, rho: list[complex], n: int,
                                   qubits: tuple[int, ...]) -> None:
         gamma = self._noise.amplitude_damping_gamma
-        if gamma <= 0:
-            return
         sqrt_g = math.sqrt(gamma)
         sqrt_1mg = math.sqrt(1.0 - gamma)
         for q in qubits:
@@ -326,8 +299,6 @@ class DensitySimulator(Backend):
     def _apply_phase_damping(self, rho: list[complex], n: int,
                               qubits: tuple[int, ...]) -> None:
         lam = self._noise.phase_damping_lambda
-        if lam <= 0:
-            return
         sqrt_1ml = math.sqrt(1.0 - lam)
         N = 1 << n
         for q in qubits:

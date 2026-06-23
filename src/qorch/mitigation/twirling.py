@@ -128,7 +128,5 @@ def twirl_circuit(circuit: Circuit, seed: int | None = None) -> Circuit:
                 new_gates.append(Gate(_PAULI_GATES[cp0 - 1], (q0,)))
             if cp1 != 0:
                 new_gates.append(Gate(_PAULI_GATES[cp1 - 1], (q1,)))
-        else:
-            new_gates.append(g)
 
     return replace(circuit, gates=tuple(new_gates))

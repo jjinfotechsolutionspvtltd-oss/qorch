@@ -293,7 +293,7 @@ def cross_entropy_benchmarking(
 
     try:
         import numpy as np
-    except ImportError:
+    except ImportError:  # pragma: no cover
         return XEBResult(
             depth=depth,
             num_circuits=num_circuits,

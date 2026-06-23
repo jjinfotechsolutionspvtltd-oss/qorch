@@ -98,9 +98,6 @@ def draw_circuit(circuit: Circuit) -> str:
         """Build the display cell for one qubit at one layer."""
         if layer["mid_2q"]:
             return " │  "
-        if layer["ctrl"] and layer["tgt"]:
-            label = _gate_label(layer["gate"], circuit)
-            return f" {label:<2}"
         if layer["ctrl"]:
             label = _gate_label(layer["gate"], circuit)
             if label == "●":

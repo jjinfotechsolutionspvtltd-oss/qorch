@@ -155,10 +155,6 @@ def _find_rule(gate_name: str, native_set: frozenset[str]) -> DecompRule | None:
     return None
 
 
-def _passthrough(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
-    return [Gate("ERROR", qubits, params)]
-
-
 def _can_decompose(circuit: Circuit, target: IndianGateSet) -> bool:
     """Check if every gate in the circuit can be decomposed to the target."""
     native = frozenset(target.basis_gates)

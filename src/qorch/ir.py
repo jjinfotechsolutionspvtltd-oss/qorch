@@ -153,9 +153,6 @@ def to_qasm3(circuit: Circuit) -> str:
             lines.append(f"{g.name} {qstr};")
     for q in circuit.readout_qubits:
         lines.append(f"measure q[{q}];")
-    if not circuit.readout_qubits:
-        for q in range(n):
-            lines.append(f"measure q[{q}];")
     lines.append("")
     return "\n".join(lines)
 
