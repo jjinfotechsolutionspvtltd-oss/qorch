@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-from qorch.ir import Circuit, Gate
+from qorch.ir import Circuit, Gate, Parameter, static_gates
 
 # Gate pairs that cancel: (g1, g2) on the same qubits → identity
 _SELF_INVERSE: frozenset[str] = frozenset({"h", "x", "y", "z", "sx"})
@@ -28,8 +28,10 @@ def _merge_rotations(gates: list[Gate]) -> list[Gate]:
             g.name in _ROTATION_GATES
             and prev.name == g.name
             and prev.qubits == g.qubits
+            and not isinstance(prev.params[0], Parameter)
+            and not isinstance(g.params[0], Parameter)
         ):
-            merged_angle = (prev.params[0] + g.params[0]) % (2 * math.pi)
+            merged_angle = (float(prev.params[0]) + float(g.params[0])) % (2 * math.pi)
             eps = 1e-12
             if abs(merged_angle) < eps or abs(merged_angle - 2 * math.pi) < eps:
                 result.pop()  # cancels to identity
@@ -75,7 +77,12 @@ def _remove_idle_gates(gates: list[Gate]) -> list[Gate]:
     for g in gates:
         if g.name == "id":
             continue
-        if g.name in _ROTATION_GATES and g.params and abs(g.params[0] % (2 * math.pi)) < eps:
+        if (
+            g.name in _ROTATION_GATES
+            and g.params
+            and not isinstance(g.params[0], Parameter)
+            and abs(float(g.params[0]) % (2 * math.pi)) < eps
+        ):
             continue
         cleaned.append(g)
     return cleaned
@@ -86,7 +93,7 @@ def optimize(circuit: Circuit, max_passes: int = 10) -> Circuit:
 
     Repeats until gate count stabilizes or ``max_passes`` is reached.
     """
-    gates = list(circuit.gates)
+    gates = list(static_gates(circuit.gates))
     for _ in range(max_passes):
         prev_len = len(gates)
         gates = _merge_rotations(gates)

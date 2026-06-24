@@ -7,11 +7,39 @@ accepts any ``Backend`` for execution.
 
 from __future__ import annotations
 
+import itertools
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from qorch.ir import Circuit, Gate
 from qorch.backends.base import Backend
+
+
+def _cnz_gates(qubits: tuple[int, ...]) -> list[Gate]:
+    """Exact, ancilla-free multi-controlled-Z: phase-flip |1…1> on ``qubits``.
+
+    Built from the phase-polynomial identity
+    ``∏ xᵢ = Σ_{∅≠S} (-1)^{|S|+1} / 2ⁿ⁻¹ · (⊕_{i∈S} xᵢ)``: each parity term is a
+    CNOT-Rz-CNOT "phase gadget". Exact up to a global phase (irrelevant to
+    measurement and to Grover's relative phases). O(2ⁿ) gadgets — fine for the
+    small registers used by algorithm demos.
+    """
+    qs = list(qubits)
+    n = len(qs)
+    if n == 1:
+        return [Gate("z", (qs[0],))]
+    gates: list[Gate] = []
+    denom = 1 << (n - 1)
+    for r in range(1, n + 1):
+        theta = math.pi * ((-1) ** (r + 1)) / denom
+        for subset in itertools.combinations(qs, r):
+            t, rest = subset[0], subset[1:]
+            for q in rest:
+                gates.append(Gate("cx", (q, t)))
+            gates.append(Gate("rz", (t,), (theta,)))
+            for q in reversed(rest):
+                gates.append(Gate("cx", (q, t)))
+    return gates
 
 
 # ── Shared result types ──────────────────────────────────────────────────
@@ -129,19 +157,17 @@ def run_qft(
 
 
 def grover_diffusion(num_qubits: int) -> Circuit:
-    """Build Grover diffusion operator (inversion about the mean)."""
+    """Build Grover diffusion operator (inversion about the mean).
+
+    ``H^n X^n (CⁿZ) X^n H^n`` — a reflection about the uniform superposition,
+    using an exact ancilla-free multi-controlled-Z. Correct for any width.
+    """
     c = Circuit(num_qubits)
     for q in range(num_qubits):
         c = c.h(q)
     for q in range(num_qubits):
         c = c.x(q)
-    c = c.h(num_qubits - 1)
-    c = c.cx(0, num_qubits - 1) if num_qubits >= 2 else c
-    for q in range(1, num_qubits - 1):
-        c = c.cx(0, q) if q == 1 else c
-        if q > 1:
-            c = c.cx(q, num_qubits - 1)
-    c = c.h(num_qubits - 1)
+    c = replace(c, gates=c.gates + tuple(_cnz_gates(tuple(range(num_qubits)))))
     for q in range(num_qubits):
         c = c.x(q)
     for q in range(num_qubits):
@@ -150,19 +176,16 @@ def grover_diffusion(num_qubits: int) -> Circuit:
 
 
 def oracle_by_bitstring(num_qubits: int, target: str) -> Circuit:
-    """Build an oracle that marks a target bitstring via phase flip."""
+    """Build an oracle that marks ``target`` via a phase flip.
+
+    Conjugates an exact CⁿZ by X on the zero-bit positions, so the phase −1 is
+    applied to exactly the marked basis state. Correct for any width.
+    """
     c = Circuit(num_qubits)
     for i, bit in enumerate(target):
         if bit == "0":
             c = c.x(i)
-    if num_qubits >= 2:
-        c = c.h(num_qubits - 1)
-        c = c.cx(0, num_qubits - 1) if num_qubits >= 2 else c
-        for q in range(1, num_qubits - 1):
-            c = c.cx(q, num_qubits - 1)
-        c = c.h(num_qubits - 1)
-    else:
-        c = c.z(0)
+    c = replace(c, gates=c.gates + tuple(_cnz_gates(tuple(range(num_qubits)))))
     for i, bit in enumerate(target):
         if bit == "0":
             c = c.x(i)
@@ -436,7 +459,7 @@ def _controlled_gate(gate: Gate, control: int, data_offset: int) -> list[Gate]:
     """Create a controlled version of a gate using CX + RZ decomposition."""
     target = gate.qubits[0] + data_offset
     if gate.name == "rz":
-        theta = gate.params[0] if gate.params else 0.0
+        theta = float(gate.params[0]) if gate.params else 0.0
         return [
             Gate("cx", (control, target)),
             Gate("rz", (target,), (theta / 2,)),
@@ -449,8 +472,9 @@ def _controlled_gate(gate: Gate, control: int, data_offset: int) -> list[Gate]:
 def _shift_qubits(circuit: Circuit, control: int, offset: int) -> Circuit:
     """Shift qubit indices in a circuit by an offset, adding a controlled qubit."""
     from dataclasses import replace
+    from qorch.ir import static_gates
     new_gates: list[Gate] = []
-    for g in circuit.gates:
+    for g in static_gates(circuit.gates):
         if len(g.qubits) >= 1:
             new_gates.extend(_controlled_gate(g, control, offset))
         else:
@@ -482,7 +506,8 @@ def run_qpe(
 
     phase = None
     if result.counts:
-        top = max(result.counts, key=result.counts.get)
+        counts = result.counts
+        top = max(counts, key=lambda k: counts[k])
         phase = int(top, 2) / (1 << phase_qubits) if phase_qubits > 0 else 0.0
 
     return QPEResult(

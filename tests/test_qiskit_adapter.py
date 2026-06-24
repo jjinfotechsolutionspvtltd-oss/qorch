@@ -36,6 +36,29 @@ def test_qiskit_backend_is_a_backend_without_importing_qiskit():
     assert issubclass(QiskitBackend, Backend)
 
 
+def test_qiskit_instruction_covers_all_supported_gates():
+    """Every gate in SUPPORTED_GATES translates to a Qiskit instruction (defect A3)."""
+    import math
+    from qorch.ir import Gate, SUPPORTED_GATES
+    from qorch.backends.qiskit_backend import qiskit_instruction
+
+    samples = {
+        "h": Gate("h", (0,)), "x": Gate("x", (0,)), "y": Gate("y", (0,)),
+        "z": Gate("z", (0,)), "sx": Gate("sx", (0,)), "t": Gate("t", (0,)),
+        "id": Gate("id", (0,)), "cx": Gate("cx", (0, 1)), "swap": Gate("swap", (0, 1)),
+        "rx": Gate("rx", (0,), (0.3,)), "ry": Gate("ry", (0,), (0.3,)),
+        "rz": Gate("rz", (0,), (0.3,)), "ms": Gate("ms", (0, 1), (math.pi / 4,)),
+    }
+    assert set(samples) == set(SUPPORTED_GATES), "sample set must cover SUPPORTED_GATES"
+    for name, g in samples.items():
+        method, params, qubits = qiskit_instruction(g)
+        assert isinstance(method, str) and method
+        assert qubits == g.qubits
+    # ms(θ)=exp(-iθXX) → rxx(2θ)
+    method, params, _ = qiskit_instruction(Gate("ms", (0, 1), (0.5,)))
+    assert method == "rxx" and abs(params[0] - 1.0) < 1e-12
+
+
 def test_construction_does_not_touch_qiskit():
     # a fake BackendV2-like object; no real Qiskit needed to wrap it
     class FakeBackend:

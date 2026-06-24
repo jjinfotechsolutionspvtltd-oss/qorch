@@ -6,7 +6,7 @@ import math
 from dataclasses import replace
 from typing import Callable
 
-from qorch.ir import Circuit, Gate, SUPPORTED_GATES
+from qorch.ir import Circuit, Gate, SUPPORTED_GATES, static_gates
 from qorch.transpiler.gateset import IndianGateSet
 
 # A decomposition rule takes (qubits, params) and returns a list of native Gates.
@@ -55,17 +55,22 @@ def _z_to_rz() -> DecompRule:
 
 
 def _cx_to_ms_rx() -> DecompRule:
-    """cx → rx(π/2) @ ms(π/4) @ rx(-π/2) for ion-trap (MS-based).
+    """cx → ry_c(π/2) · ms(π/4) · rx_c(-π/2) · rx_t(-π/2) · ry_c(-π/2) (MS-based).
 
-    For MS gate: XX(θ) = exp(-i θ X⊗X).
-    CX = (I⊗R_x(π/2)) · XX(π/4) · (I⊗R_x(-π/2))
+    With XX(θ) = exp(-iθ X⊗X) and the MS angle π/4, this product equals CNOT up
+    to a global phase (verified numerically). Uses only ion-trap native gates
+    (rx, ry, ms). The earlier 3-gate form was incorrect — it lacked the
+    single-qubit rotations on the control and only appeared to work because the
+    simulator previously aliased ``ms`` to ``cx``.
     """
     def rule(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
         c, t = qubits[0], qubits[1]
         return [
-            Gate("rx", (t,), (math.pi / 2,)),
+            Gate("ry", (c,), (math.pi / 2,)),
             Gate("ms", (c, t), (math.pi / 4,)),
+            Gate("rx", (c,), (-math.pi / 2,)),
             Gate("rx", (t,), (-math.pi / 2,)),
+            Gate("ry", (c,), (-math.pi / 2,)),
         ]
     return rule
 
@@ -234,8 +239,9 @@ def decompose_to_clifford_t(circuit: Circuit) -> tuple[Circuit, int, int]:
     """
     from qorch.transpiler.gateset import CLIFFORD_T
     result = decompose(circuit, CLIFFORD_T)
-    tc = _count_t(result.gates)
-    td = _t_depth(result.gates, result.num_qubits)
+    gates = static_gates(result.gates)
+    tc = _count_t(gates)
+    td = _t_depth(gates, result.num_qubits)
     return result, tc, td
 
 
@@ -343,7 +349,7 @@ def decompose(circuit: Circuit, target: IndianGateSet, _depth: int = 0) -> Circu
     native = frozenset(target.basis_gates)
     new_gates: list[Gate] = []
     any_non_native = False
-    for g in circuit.gates:
+    for g in static_gates(circuit.gates):
         if g.name in native:
             new_gates.append(g)
             continue

@@ -45,13 +45,29 @@ def test_decompose_z_to_rz_pi():
     assert abs(decomposed.gates[0].params[0] - 3.14159) < 0.01
 
 
-def test_decompose_cx_to_rx_ms_rx():
-    """cx → rx(π/2) ms(π/4) rx(-π/2) for ion-trap."""
+def test_decompose_cx_to_ion_trap_native():
+    """cx decomposes to ion-trap native gates (rx, ry, ms) only."""
     circuit = Circuit(num_qubits=2).cx(0, 1)
     decomposed = decompose(circuit, IIT_JODHPUR_ION_TRAP)
-    names = [g.name for g in decomposed.gates]
-    assert names == ["rx", "ms", "rx"]
     assert all(g.name in IIT_JODHPUR_ION_TRAP.basis_gates for g in decomposed.gates)
+    assert any(g.name == "ms" for g in decomposed.gates)
+
+
+def test_decompose_cx_is_semantically_correct():
+    """The MS-based decomposition reproduces the CX truth table exactly."""
+    import math
+    from qorch import LocalSimulator
+    expected = {"00": "00", "01": "01", "10": "11", "11": "10"}
+    for inp, out in expected.items():
+        c = Circuit(2)
+        if inp[0] == "1":
+            c = c.rx(0, math.pi)
+        if inp[1] == "1":
+            c = c.rx(1, math.pi)
+        d = decompose(c.cx(0, 1).measure(0, 1), IIT_JODHPUR_ION_TRAP)
+        counts = LocalSimulator(seed=5).run(d, shots=1000).counts
+        top = max(counts, key=counts.get)
+        assert top == out, f"CX|{inp}> gave {top}, expected {out}"
 
 
 def test_decompose_bell_state_superconducting():
@@ -90,10 +106,11 @@ def test_routing_all_to_all_no_swaps():
 
 
 def test_routing_preserves_bell_state():
-    """Routed Bell state should still be correlated (entangled) on noiseless sim.
+    """Routed Bell state must reproduce the *logical* output distribution.
 
-    After routing cx(0,3) on a 0-1-2-3 line, SWAPs move qubit 0 to physical 3
-    and qubit 3 to physical 2, so the final entangled outcomes are 0000 and 0011.
+    Routing is semantically transparent: read-out is remapped through the final
+    layout, so cx(0,3) on a 0-1-2-3 line still yields the logical Bell outcomes
+    0000 and 1001 (qubits 0 and 3 correlated), independent of physical wiring.
     """
     from qorch import LocalSimulator
     edges = ((0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2))
@@ -101,7 +118,10 @@ def test_routing_preserves_bell_state():
     bell = Circuit(num_qubits=4).h(0).cx(0, 3)
     routed = route(bell, cmap)
     result = LocalSimulator(seed=42).run(routed, shots=2000)
-    assert set(result.counts) <= {"0000", "0011"}
+    assert set(result.counts) <= {"0000", "1001"}
+    # both outcomes actually appear (genuine entanglement, not collapse)
+    assert result.counts.get("0000", 0) > 500
+    assert result.counts.get("1001", 0) > 500
 
 
 # ── SabreSWAP lookahead router ───────────────────────────────────────────
@@ -153,7 +173,50 @@ def test_lookahead_preserves_semantics_via_sim():
     c = Circuit(4).h(0).cx(0, 3)
     routed = route_lookahead(c, cmap)
     result = LocalSimulator(seed=42).run(routed, shots=1000)
-    assert set(result.counts) <= {"0000", "0011"}
+    # logical Bell outcomes preserved through the final-layout remap
+    assert set(result.counts) <= {"0000", "1001"}
+
+
+def _tvd(a: dict[str, int], b: dict[str, int], shots: int) -> float:
+    keys = set(a) | set(b)
+    return 0.5 * sum(abs(a.get(k, 0) - b.get(k, 0)) for k in keys) / shots
+
+
+def test_routing_preserves_distribution_property():
+    """Property: route() must preserve the logical output distribution.
+
+    For several circuits and topologies, the routed circuit simulated on an
+    ideal backend must match the unrouted reference within sampling noise. This
+    guards the whole class of layout/measurement-remap bugs (defect A2).
+    """
+    from qorch import LocalSimulator
+    line = CouplingMap(edges=((0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2)))
+    cases = [
+        Circuit(4).h(0).cx(0, 3).measure(0, 1, 2, 3),
+        Circuit(4).h(1).cx(1, 3).x(0).measure(0, 1, 2, 3),
+        Circuit(4).h(0).cx(0, 2).cx(2, 3).measure(0, 3),
+        Circuit(4).x(3).h(0).cx(0, 3),  # default measure-all
+    ]
+    for c in cases:
+        ref = LocalSimulator(seed=7).run(c, shots=4000).counts
+        routed = route(c, line)
+        got = LocalSimulator(seed=7).run(routed, shots=4000).counts
+        assert _tvd(ref, got, 4000) < 0.05, f"routing changed distribution: {c.gates}"
+
+
+def test_lookahead_preserves_distribution_property():
+    from qorch import LocalSimulator
+    line = CouplingMap(edges=((0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2)))
+    cases = [
+        Circuit(4).h(0).cx(0, 3).measure(0, 1, 2, 3),
+        Circuit(4).h(1).cx(1, 3).x(0).measure(0, 1, 2, 3),
+        Circuit(4).x(3).h(0).cx(0, 3),
+    ]
+    for c in cases:
+        ref = LocalSimulator(seed=7).run(c, shots=4000).counts
+        routed = route_lookahead(c, line)
+        got = LocalSimulator(seed=7).run(routed, shots=4000).counts
+        assert _tvd(ref, got, 4000) < 0.05, f"lookahead changed distribution: {c.gates}"
 
 
 def test_lookahead_fewer_swaps_than_greedy():

@@ -21,10 +21,6 @@ _PAULI: dict[str, tuple[complex, ...]] = {
 }
 
 
-def _pauli_label(i: int) -> tuple[str, str]:
-    return ("I", "I")
-
-
 def _rotate_to_basis(circuit: Circuit, qubit: int, basis: str) -> Circuit:
     """Prepend rotation so Z-measurement gives the desired Pauli expectation."""
     if basis == "Z":
@@ -63,10 +59,14 @@ def _expectation_2q(counts: dict[str, int], shots: int) -> float:
 def _measure_expectation_1q(
     backend: Backend, circuit: Circuit, basis: str, qubit: int, shots: int
 ) -> float:
-    """Run circuit rotated to *basis* and return the Pauli expectation."""
-    rot = _rotate_to_basis(circuit, qubit, basis).measure(qubit, qubit)
+    """Run circuit rotated to *basis* and return the Pauli expectation.
+
+    Measures only ``qubit`` (a single classical bit), so the result key is one
+    character read at position 0 — correct for any qubit index, not just 0.
+    """
+    rot = _rotate_to_basis(circuit, qubit, basis).measure(qubit)
     counts = backend.run(rot, shots=shots).counts
-    return _expectation_1q(counts, shots, qubit)
+    return _expectation_1q(counts, shots, 0)
 
 
 @dataclass

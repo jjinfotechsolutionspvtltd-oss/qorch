@@ -5,8 +5,9 @@ extrapolates back to the zero-noise limit. We amplify noise *digitally* by foldi
 circuit ``C -> C (C^dagger C)^k``: logically the identity-padded circuit equals ``C``, but a
 noisy device accumulates ``(2k+1)x`` the gate errors — so noise scale ``lambda = 2k+1``.
 
-All gates in the QS-004 IR (h, x, z, cx) are self-inverse, so the adjoint ``C^dagger`` is just
-the gate list reversed. When non-self-inverse gates are added, ``_dagger`` must invert each.
+The adjoint ``C^dagger`` reverses the gate order and inverts each gate via
+``ir.inverse_gates`` (rotations negate their angle, sx→sx³, t→t⁷). Folding is therefore valid
+for the full IR, not only self-inverse gates.
 """
 
 from __future__ import annotations
@@ -15,23 +16,30 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from qorch.backends.base import Backend
-from qorch.ir import Circuit, Gate
+from qorch.ir import Circuit, Gate, inverse_gates, static_gates
 
 # An observable maps measurement counts to a real expectation value.
 Observable = Callable[[dict[str, int]], float]
 
 
 def _dagger(gates: tuple[Gate, ...]) -> tuple[Gate, ...]:
-    """Adjoint of a gate sequence. Valid while every gate is self-inverse (see module docstring)."""
-    return tuple(reversed(gates))
+    """Adjoint of a gate sequence: reverse order, invert each gate.
+
+    Correct for the full IR (rotations, sx, t, ms) — not just self-inverse
+    gates. ``(G₁…Gₙ)† = Gₙ†…G₁†`` with each ``Gᵢ†`` from :func:`inverse_gates`.
+    """
+    out: list[Gate] = []
+    for g in reversed(gates):
+        out.extend(inverse_gates(g))
+    return tuple(out)
 
 
 def fold_circuit(circuit: Circuit, scale: int) -> Circuit:
     """Fold to noise scale ``scale`` (an odd integer >= 1). Gate count becomes ``scale x``."""
     if scale < 1 or scale % 2 == 0:
         raise ValueError(f"scale must be an odd integer >= 1, got {scale}")
-    base = circuit.gates
-    folded = list(base)
+    base = static_gates(circuit.gates)
+    folded: list[Gate] = list(base)
     for _ in range((scale - 1) // 2):
         folded.extend(_dagger(base))
         folded.extend(base)
