@@ -45,3 +45,13 @@ ignore_missing_imports = true
 disallow_untyped_defs = false
 warn_unused_ignores = true
 exclude = ["tests/", "benchmarks/"]
+
+# Optional heavy dependencies are used lazily behind the HAL and typed as Any.
+# Skip following into them so the type check is deterministic whether or not the
+# optional extras are installed (and immune to upstream stub/version drift, e.g.
+# newer numpy stubs using PEP 695 `type` aliases).
+[[tool.mypy.overrides]]
+module = ["numpy.*", "scipy.*", "qiskit.*", "qiskit_aer.*", "qiskit_ibm_runtime.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+ignore_missing_imports = true

@@ -101,10 +101,22 @@ def randomized_benchmarking(
 
         survival_probs.append(sum(probs) / len(probs) if probs else 0.0)
 
-    # Fit exponential: P = A * p^depth + B
+    # Fit exponential P = A·p^depth + B. The 3-parameter scipy fit needs at least
+    # 4 depths to be well-determined; with fewer points (or no scipy, or a fit that
+    # fails to converge) fall back to a simple per-depth-decay estimate.
     p_est = None
     coeffs = None
-    if depths and survival_probs and len(depths) >= 2:
+
+    def _simple_estimate() -> float | None:
+        if len(survival_probs) >= 2:
+            ratios = [survival_probs[i + 1] / survival_probs[i]
+                      for i in range(len(survival_probs) - 1)
+                      if survival_probs[i] > 0]
+            if ratios:
+                return 1.0 - (sum(ratios) / len(ratios))
+        return None
+
+    if depths and survival_probs and len(depths) >= 4:
         try:
             import numpy as np
             from scipy.optimize import curve_fit
@@ -115,18 +127,15 @@ def randomized_benchmarking(
             xdata = np.array(depths, dtype=float)
             ydata = np.array(survival_probs, dtype=float)
             init_guess = [0.5, 0.5, 0.99]
-            coeffs, _ = curve_fit(_exp_decay, xdata, ydata, p0=init_guess, maxfev=5000)
-            a_fit, b_fit, p_fit = coeffs
+            fit, _ = curve_fit(_exp_decay, xdata, ydata, p0=init_guess, maxfev=5000)
+            a_fit, b_fit, p_fit = fit
             p_est = (1 - p_fit) * (2**num_qubits - 1) / 2**num_qubits
             coeffs = (a_fit, b_fit, p_fit)
-        except ImportError:
-            # No scipy — simple estimate: average per-depth decay
-            if len(survival_probs) >= 2:
-                ratios = [survival_probs[i+1] / survival_probs[i]
-                          for i in range(len(survival_probs)-1)
-                          if survival_probs[i] > 0]
-                if ratios:
-                    p_est = 1.0 - (sum(ratios) / len(ratios))
+        except Exception:
+            # No scipy, or the fit failed to converge — use the simple estimate.
+            p_est = _simple_estimate()
+    elif depths and survival_probs:
+        p_est = _simple_estimate()
 
     return RBResult(
         depths=list(depths),
