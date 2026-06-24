@@ -15,12 +15,36 @@ function below.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from qorch.backends.base import Backend, BackendProperties, JobResult
 from qorch.ir import Circuit
 
-# Map our IR gate names to Qiskit QuantumCircuit method names.
-_GATE_METHODS = {"h": "h", "x": "x", "z": "z", "cx": "cx"}
+# Map our IR gate names to Qiskit QuantumCircuit method names. Covers the full
+# qorch gate set (defect A3 fix) — previously only h/x/z/cx were handled and any
+# rotation/sx/swap/ms/t/y/id raised KeyError.
+_GATE_METHODS = {
+    "h": "h", "x": "x", "y": "y", "z": "z", "sx": "sx", "t": "t", "id": "id",
+    "cx": "cx", "swap": "swap",
+    "rx": "rx", "ry": "ry", "rz": "rz",
+    "ms": "rxx",
+}
+
+
+def qiskit_instruction(gate) -> tuple[str, tuple[float, ...], tuple[int, ...]]:
+    """Translate a qorch ``Gate`` to ``(qiskit_method, params, qubits)``.
+
+    Pure and Qiskit-free so the whole gate-coverage surface is unit-testable
+    without the SDK. The Mølmer–Sørensen gate ``ms(θ)=exp(-iθ X⊗X)`` maps to
+    Qiskit's ``rxx(φ)=exp(-iφ/2 X⊗X)`` with ``φ = 2θ``.
+    """
+    if gate.name not in _GATE_METHODS:
+        raise ValueError(f"no Qiskit mapping for gate {gate.name!r}")
+    method = _GATE_METHODS[gate.name]
+    if gate.name == "ms":
+        theta = gate.params[0] if gate.params else 0.0
+        return method, (2.0 * theta,), gate.qubits
+    return method, gate.params, gate.qubits
 
 # Environment variable holding the IBM Quantum API token (a secret; never committed).
 IBM_TOKEN_ENV = "QISKIT_IBM_TOKEN"
@@ -42,10 +66,10 @@ def reorder_counts_qiskit_to_qorch(counts: dict[str, int]) -> dict[str, int]:
 class QiskitBackend(Backend):
     """Wraps any Qiskit execution target (Aer simulator or IBM hardware) as a qorch backend."""
 
-    def __init__(self, qiskit_backend: object, name: str | None = None) -> None:
-        # qiskit_backend is a BackendV2-like object; typed as object to avoid a hard import.
-        self._backend = qiskit_backend
-        self.name = name or getattr(qiskit_backend, "name", "qiskit-backend")
+    def __init__(self, qiskit_backend: Any, name: str | None = None) -> None:
+        # qiskit_backend is a BackendV2-like object; typed as Any to avoid a hard import.
+        self._backend: Any = qiskit_backend
+        self.name = str(name or getattr(qiskit_backend, "name", "qiskit-backend"))
 
     # --- constructors -----------------------------------------------------
     @classmethod
@@ -105,7 +129,8 @@ class QiskitBackend(Backend):
         readout = circuit.readout_qubits
         qc = QuantumCircuit(circuit.num_qubits, len(readout))
         for gate in circuit.gates:
-            getattr(qc, _GATE_METHODS[gate.name])(*gate.qubits)
+            method, params, qubits = qiskit_instruction(gate)
+            getattr(qc, method)(*params, *qubits)
         for classical_bit, qubit in enumerate(readout):
             qc.measure(qubit, classical_bit)
         return qc

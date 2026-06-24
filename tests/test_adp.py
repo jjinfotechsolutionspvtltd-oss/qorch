@@ -69,6 +69,30 @@ class TestGrover:
         assert len(result.marked_states) == 2
         assert len(result.top_outcomes) <= 5
 
+    def test_grover_amplifies_marked_state_3q(self):
+        """Grover must concentrate probability on the marked state (defect A7).
+
+        The previous ad-hoc multi-control was not a real MCZ and did not amplify
+        for n >= 3.
+        """
+        from qorch.adp import run_grover
+
+        sim = LocalSimulator(seed=3)
+        for mark in ("101", "000", "110"):
+            result = run_grover(sim, num_qubits=3, marked=mark, shots=4000)
+            top_state, top_count = result.top_outcomes[0]
+            assert top_state == mark, f"top outcome {top_state} != marked {mark}"
+            assert top_count / 4000 > 0.8, "marked state not strongly amplified"
+
+    def test_grover_amplifies_marked_state_4q(self):
+        from qorch.adp import run_grover
+
+        sim = LocalSimulator(seed=7)
+        result = run_grover(sim, num_qubits=4, marked="1011", shots=4000)
+        top_state, top_count = result.top_outcomes[0]
+        assert top_state == "1011"
+        assert top_count / 4000 > 0.7
+
 
 class TestQAOA:
     def test_qaoa_cost_circuit_builds(self):

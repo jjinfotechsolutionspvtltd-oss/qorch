@@ -13,8 +13,14 @@ import math
 import random
 from dataclasses import dataclass
 
-from qorch.backends.base import Backend, BackendProperties, JobResult
-from qorch.ir import Circuit
+from qorch.backends.base import (
+    Backend,
+    BackendProperties,
+    DeviceCalibration,
+    JobResult,
+    QubitCalibration,
+)
+from qorch.ir import Circuit, Gate, bound_params, static_gates
 
 
 _INV_SQRT2 = 1.0 / math.sqrt(2.0)
@@ -26,6 +32,7 @@ _GATES_1Q: dict[str, tuple[complex, complex, complex, complex]] = {
     "z": (1, 0, 0, -1),
     "sx": (0.5 + 0.5j, 0.5 - 0.5j, 0.5 - 0.5j, 0.5 + 0.5j),
     "id": (1, 0, 0, 1),
+    "t": (1, 0, 0, cmath.exp(1j * math.pi / 4)),  # T = diag(1, e^{iπ/4})
 }
 
 
@@ -64,6 +71,16 @@ def _swap_matrix() -> tuple[complex, ...]:
             0, 0, 1, 0,
             0, 1, 0, 0,
             0, 0, 0, 1)
+
+
+def _xx_matrix(theta: float) -> tuple[complex, ...]:
+    """Mølmer–Sørensen XX(θ) = exp(-iθ X⊗X), row-major 4×4 (basis 00,01,10,11)."""
+    c = math.cos(theta)
+    s = -1j * math.sin(theta)
+    return (c, 0, 0, s,
+            0, c, s, 0,
+            0, s, c, 0,
+            s, 0, 0, c)
 
 
 @dataclass(frozen=True)
@@ -132,6 +149,30 @@ class DensitySimulator(Backend):
         self._rng = random.Random(seed)
         self._noise = noise or NoiseChannel()
 
+    @classmethod
+    def from_calibration(
+        cls,
+        calibration: "DeviceCalibration",
+        seed: int | None = None,
+    ) -> "DensitySimulator":
+        """Build a density simulator whose noise channel comes from device T1/T2.
+
+        Uses a representative qubit (qubit 0) and the average gate duration to
+        derive amplitude/phase damping — the exact-simulation counterpart to the
+        Indian-QPU sampler, and the path that actually consumes T1/T2 (A9).
+        """
+        q0 = calibration.qubits[0] if calibration.qubits else QubitCalibration()
+        durations = calibration.gate_durations_us.values()
+        gate_time = (sum(durations) / len(durations)) if durations else 0.5
+        gate_fidelity = 1.0 - q0.single_qubit_error
+        noise = NoiseChannel.from_gate_fidelity(
+            gate_fidelity=gate_fidelity,
+            t1_us=q0.t1_us,
+            t2_us=q0.t2_us,
+            gate_time_us=gate_time,
+        )
+        return cls(seed=seed, noise=noise)
+
     def properties(self) -> BackendProperties:
         return BackendProperties(
             num_qubits=8,
@@ -157,7 +198,7 @@ class DensitySimulator(Backend):
     def _evolve(self, circuit: Circuit) -> list[complex]:
         n = circuit.num_qubits
         rho = self._init_rho(n)
-        for gate in circuit.gates:
+        for gate in static_gates(circuit.gates):
             self._apply_gate(rho, n, gate)
             if self._noise.depolarizing_prob > 0:
                 self._apply_depolarizing(rho, n, gate.qubits)
@@ -167,15 +208,17 @@ class DensitySimulator(Backend):
                 self._apply_phase_damping(rho, n, gate.qubits)
         return rho
 
-    def _apply_gate(self, rho: list[complex], n: int, gate: object) -> None:
-        from qorch.ir import Gate as QGate
-        g: QGate = gate
+    def _apply_gate(self, rho: list[complex], n: int, gate: "Gate") -> None:
+        g = gate
         if g.name == "cx":
             self._apply_2q_gate(rho, n, _cx_matrix(), g.qubits[0], g.qubits[1])
         elif g.name == "swap":
             self._apply_2q_gate(rho, n, _swap_matrix(), g.qubits[0], g.qubits[1])
+        elif g.name == "ms":
+            theta = float(g.params[0]) if g.params else 0.0
+            self._apply_2q_gate(rho, n, _xx_matrix(theta), g.qubits[0], g.qubits[1])
         else:
-            m = _gate_matrix(g.name, g.params)
+            m = _gate_matrix(g.name, bound_params(g.params))
             self._apply_1q_gate(rho, n, m, g.qubits[0])
 
     def _apply_1q_gate(self, rho: list[complex], n: int,

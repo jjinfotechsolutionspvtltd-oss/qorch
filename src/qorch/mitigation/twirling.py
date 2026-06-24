@@ -13,7 +13,7 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 
-from qorch.ir import Circuit, Gate
+from qorch.ir import Circuit, Gate, static_gates
 
 # Pauli conjugation: for a Clifford gate G and Pauli P, compute G·P·G†
 # For our gate set, we precompute the Pauli-to-Pauli mapping.
@@ -99,7 +99,7 @@ def twirl_circuit(circuit: Circuit, seed: int | None = None) -> Circuit:
     _TWIRLABLE = frozenset({"h", "x", "y", "z", "sx", "cx", "swap"})
 
     new_gates: list[Gate] = []
-    for g in circuit.gates:
+    for g in static_gates(circuit.gates):
         if g.name not in _TWIRLABLE:
             new_gates.append(g)
             continue

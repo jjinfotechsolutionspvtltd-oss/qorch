@@ -10,7 +10,9 @@ import math
 import random
 from dataclasses import dataclass
 
-from qorch.ir import Circuit
+from dataclasses import replace
+
+from qorch.ir import Circuit, Gate, inverse_gates
 from qorch.backends.base import Backend
 
 # ── utilities ────────────────────────────────────────────────────────────────
@@ -44,29 +46,9 @@ _CLIFFORD_1Q: tuple[tuple[str, ...], ...] = (
     ("h", "x", "h", "z"),
 )
 
-# Inverse lookup: the Clifford that undoes a sequence (simplified).
-# We just use the compiled inverse from the sequence.
-_CLIFFORD_INVERSE: dict[tuple[str, ...], tuple[str, ...]] = {}
-for seq in _CLIFFORD_1Q:
-    inv_seq: tuple[str, ...] = tuple(reversed(seq))
-    _CLIFFORD_INVERSE[seq] = inv_seq
-
-
 def _random_clifford_1q(rng: random.Random) -> tuple[str, ...]:
-    """Return a random 1-qubit Clifford sequence."""
+    """Return a random 1-qubit Clifford sequence (from canonical generators)."""
     return _CLIFFORD_1Q[rng.randint(0, len(_CLIFFORD_1Q) - 1)]
-
-
-def _inverse_clifford(seq: tuple[str, ...]) -> tuple[str, ...]:
-    """Return the inverse Clifford sequence."""
-    return _CLIFFORD_INVERSE.get(seq, seq)
-
-
-def _apply_seq(circuit: Circuit, seq: tuple[str, ...], qubit: int) -> Circuit:
-    """Apply a 1-qubit gate sequence to ``qubit`` of ``circuit``."""
-    for name in seq:
-        circuit = circuit._add(name, qubit)
-    return circuit
 
 
 # ── 1. Randomized Benchmarking ─────────────────────────────────────────────
@@ -100,27 +82,20 @@ def randomized_benchmarking(
     for depth in depths:
         probs: list[float] = []
         for _ in range(circuits_per_depth):
-            c = Circuit(num_qubits)
-            # Generate random Clifford sequence
+            # Forward: a random sequence of `depth` Clifford generators on qubit 0.
+            forward: list[Gate] = []
             for _ in range(depth):
-                seq = _random_clifford_1q(rng)
-                c = _apply_seq(c, seq, 0)
-            # Append inverse to return to |0⟩
-            # For simplicity, we measure in the Z basis
-            c_ideal = Circuit(num_qubits)
-            seqs: list[tuple[str, ...]] = []
-            for _ in range(depth):
-                seqs.append(_random_clifford_1q(rng))
-            for seq in seqs:
-                c_ideal = _apply_seq(c_ideal, seq, 0)
-            # Apply inverse (just run the reverse)
-            for seq in reversed(seqs):
-                inv = _inverse_clifford(seq)
-                c_ideal = _apply_seq(c_ideal, inv, 0)
-            c_ideal = c_ideal.measure(0)
+                for name in _random_clifford_1q(rng):
+                    forward.append(Gate(name, (0,)))
+            # Recovery: the exact inverse of the whole forward sequence
+            # (reverse order, invert each gate). Noiseless ⇒ returns to |0⟩.
+            recovery: list[Gate] = []
+            for g in reversed(forward):
+                recovery.extend(inverse_gates(g))
 
-            result = backend.run(c_ideal, shots=shots)
-            # Survival = probability of |0⟩
+            c = replace(Circuit(num_qubits), gates=tuple(forward + recovery)).measure(0)
+            result = backend.run(c, shots=shots)
+            # Survival = probability of |0⟩ (only qubit 0 measured ⇒ key is "0"/"1")
             p0 = result.counts.get("0", 0) / shots
             probs.append(p0)
 
@@ -363,15 +338,17 @@ def cross_entropy_benchmarking(
         if ideal_probs is None:
             continue
 
-        # Linear XEB: F_xeb = (N * sum(p_i * s_i) - 1) / (N - 1)
-        # where p_i = ideal probability, s_i = fraction of shots
+        # Standard linear cross-entropy benchmarking fidelity (Google 2019):
+        #   F_XEB = 2ⁿ · Σ_x p_ideal(x) p_exp(x) − 1
+        # which is 0 for a fully-depolarized (uniform) output and → 1 for the
+        # noiseless distribution in the Porter–Thomas limit.
         N = 1 << num_qubits
         total = 0.0
         for bitstring, count in result.counts.items():
             idx = int(bitstring, 2)
             p_ideal = ideal_probs.get(idx, 0.0)
             total += p_ideal * (count / shots)
-        f_xeb = (N * total - 1) / (N - 1) if N > 1 else 0.0
+        f_xeb = N * total - 1.0
         xeb_values.append(f_xeb)
 
     mean_xeb = float(np.mean(xeb_values)) if xeb_values else None
@@ -388,8 +365,12 @@ def cross_entropy_benchmarking(
 def _compute_ideal_probs(
     circuit: Circuit, num_qubits: int
 ) -> dict[int, float] | None:
-    """Compute ideal output probabilities via statevector simulation.
+    """Compute ideal output probabilities via exact statevector simulation.
 
-    Uses qorch's LocalSimulator for dependency-free computation.
+    Uses qorch's dependency-free ``LocalSimulator`` evolution (no sampling) so
+    XEB has a noiseless reference distribution to score against.
     """
-    return None
+    from qorch.backends.simulator import LocalSimulator
+
+    amps = LocalSimulator()._evolve(circuit)
+    return {i: abs(a) ** 2 for i, a in enumerate(amps)}

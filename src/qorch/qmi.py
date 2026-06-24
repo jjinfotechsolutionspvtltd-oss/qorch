@@ -23,7 +23,7 @@ import struct
 from dataclasses import replace
 from typing import ClassVar
 
-from qorch.ir import Circuit, Gate
+from qorch.ir import Circuit, Gate, static_gates
 
 OPCODES: dict[str, int] = {
     "h": 0,
@@ -56,16 +56,20 @@ def _unpack_float32_le(data: bytes, offset: int) -> tuple[float, int]:
 
 
 def to_qmi(circuit: Circuit) -> bytes:
-    """Encode a ``Circuit`` as QMI binary bytes."""
+    """Encode a ``Circuit`` as QMI binary bytes.
+
+    QMI v1 is a static-circuit format; dynamic circuits (mid-circuit measurement,
+    reset, classical control) raise a clear error rather than silently dropping ops.
+    """
     gates_data = bytearray()
-    for g in circuit.gates:
+    for g in static_gates(circuit.gates):
         op = OPCODES[g.name]
         nq = len(g.qubits)
         np = len(g.params)
         gates_data.extend(struct.pack("<BBB", op, nq, np))
         gates_data.extend(bytes(g.qubits))
         for p in g.params:
-            gates_data.extend(_float32_le(p))
+            gates_data.extend(_float32_le(float(p)))
 
     measured = bytes(circuit.measured)
     header = struct.pack(
@@ -80,18 +84,33 @@ def to_qmi(circuit: Circuit) -> bytes:
 
 
 def from_qmi(data: bytes) -> Circuit:
-    """Decode QMI binary bytes into a ``Circuit``."""
+    """Decode QMI binary bytes into a ``Circuit``.
+
+    Validates the buffer at every step: a truncated or malformed blob raises a
+    clear ``ValueError`` rather than a raw ``struct.error`` or an over-read
+    (QMI is an external-bytes trust boundary).
+    """
+    header_size = struct.calcsize(_HEADER_FMT)
+    if len(data) < header_size:
+        raise ValueError(f"QMI too short: need {header_size} header bytes, got {len(data)}")
     magic, _reserved, num_qubits, num_gates, num_measured = struct.unpack_from(
         _HEADER_FMT, data, 0
     )
     if magic != _MAGIC:
         raise ValueError(f"bad magic: {magic!r}, expected {_MAGIC!r}")
 
-    offset = struct.calcsize(_HEADER_FMT)
+    offset = header_size
+    gate_hdr = struct.calcsize(_GATE_HEADER_FMT)
     gates: list[Gate] = []
     for _ in range(num_gates):
+        if offset + gate_hdr > len(data):
+            raise ValueError("QMI truncated: incomplete gate header")
         op, nq, np = struct.unpack_from(_GATE_HEADER_FMT, data, offset)
-        offset += struct.calcsize(_GATE_HEADER_FMT)
+        offset += gate_hdr
+        if op not in NAMES:
+            raise ValueError(f"QMI unknown opcode: {op}")
+        if offset + nq + np * 4 > len(data):
+            raise ValueError("QMI truncated: incomplete gate body")
         qubits = tuple(data[offset : offset + nq])
         offset += nq
         params: list[float] = []
@@ -100,6 +119,8 @@ def from_qmi(data: bytes) -> Circuit:
             params.append(p)
         gates.append(Gate(name=NAMES[op], qubits=qubits, params=tuple(params)))
 
+    if offset + num_measured > len(data):
+        raise ValueError("QMI truncated: incomplete measured list")
     measured = tuple(data[offset : offset + num_measured])
     offset += num_measured
 

@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass
 
 from qorch.backends.base import Backend, BackendProperties, JobResult
-from qorch.ir import Circuit
+from qorch.ir import Circuit, Measure, Reset, bound_params
 
 _INV_SQRT2 = 1.0 / math.sqrt(2.0)
 
@@ -27,6 +27,7 @@ _GATES_1Q: dict[str, tuple[complex, complex, complex, complex]] = {
     "z": (1, 0, 0, -1),
     "sx": (0.5 + 0.5j, 0.5 - 0.5j, 0.5 - 0.5j, 0.5 + 0.5j),
     "id": (1, 0, 0, 1),
+    "t": (1, 0, 0, cmath.exp(1j * math.pi / 4)),  # T = diag(1, e^{iπ/4})
 }
 
 
@@ -48,6 +49,21 @@ def _gate_matrix(name: str, params: tuple[float, ...] = ()) -> tuple[complex, co
         theta = params[0] if params else 0.0
         return (cmath.exp(-1j * theta / 2), 0, 0, cmath.exp(1j * theta / 2))
     raise ValueError(f"unknown gate: {name!r}")
+
+
+def _xx_matrix(theta: float) -> tuple[complex, ...]:
+    """Mølmer–Sørensen entangler XX(θ) = exp(-iθ X⊗X) as a row-major 4×4 tuple.
+
+    Basis order (q0 high bit, q1 low bit): 00, 01, 10, 11.
+    """
+    c = math.cos(theta)
+    s = -1j * math.sin(theta)
+    return (
+        c, 0, 0, s,
+        0, c, s, 0,
+        0, s, c, 0,
+        s, 0, 0, c,
+    )
 
 # Pauli error operators for the depolarizing channel (trajectory Monte Carlo).
 _PAULIS: dict[str, tuple[complex, complex, complex, complex]] = {
@@ -135,7 +151,9 @@ class LocalSimulator(Backend):
 
     def run(self, circuit: Circuit, shots: int = 1024) -> JobResult:
         self.validate(circuit)
-        if self._gate_noise.active:
+        if circuit.is_dynamic:
+            counts = self._run_dynamic(circuit, shots)
+        elif self._gate_noise.active:
             counts = self._sample_trajectories(circuit, shots)
         else:
             counts = self._sample(self._evolve(circuit), circuit, shots)
@@ -147,8 +165,65 @@ class LocalSimulator(Backend):
                 "p1_given0": self._noise.p1_given0,
                 "p0_given1": self._noise.p0_given1,
                 "depolarizing_prob": self._gate_noise.depolarizing_prob,
+                "dynamic": circuit.is_dynamic,
             },
         )
+
+    # --- dynamic execution (mid-circuit measurement + classical control) ---
+    def _run_dynamic(self, circuit: Circuit, shots: int) -> dict[str, int]:
+        """Execute a dynamic circuit shot-by-shot.
+
+        Each shot is an independent trajectory: gates apply unitarily, a
+        ``Measure`` collapses the state and writes a classical bit, conditional
+        gates consult the classical register (feed-forward), and ``Reset`` returns
+        a qubit to |0⟩. The result key is the classical register (cbit 0 leftmost).
+        Readout noise, if configured, is applied to each measurement outcome.
+        """
+        n = circuit.num_qubits
+        counts: dict[str, int] = {}
+        for _ in range(shots):
+            state = [0j] * (1 << n)
+            state[0] = 1 + 0j
+            creg = [0] * circuit.num_clbits
+            for op in circuit.gates:
+                if op.condition is not None:
+                    if any(creg[cbit] != val for cbit, val in op.condition):
+                        continue
+                if isinstance(op, Measure):
+                    outcome = self._measure_qubit(state, n, op.qubits[0])
+                    if self._noise.active:
+                        outcome = self._apply_readout_noise(outcome)
+                    creg[op.cbit] = outcome
+                elif isinstance(op, Reset):
+                    if self._measure_qubit(state, n, op.qubits[0]) == 1:
+                        self._apply_1q(state, n, _GATES_1Q["x"], op.qubits[0])
+                elif op.name == "cx":
+                    self._apply_cx(state, n, op.qubits[0], op.qubits[1])
+                elif op.name == "swap":
+                    self._apply_swap(state, n, op.qubits[0], op.qubits[1])
+                elif op.name == "ms":
+                    theta = float(op.params[0]) if op.params else 0.0
+                    self._apply_2q(state, n, _xx_matrix(theta), op.qubits[0], op.qubits[1])
+                else:
+                    m = _gate_matrix(op.name, bound_params(op.params))
+                    self._apply_1q(state, n, m, op.qubits[0])
+            key = "".join(str(b) for b in creg)
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _measure_qubit(self, state: list[complex], n: int, q: int) -> int:
+        """Projectively measure qubit ``q``: sample outcome, collapse, renormalize."""
+        stride = 1 << (n - 1 - q)
+        p1 = sum(abs(state[i]) ** 2 for i in range(1 << n) if i & stride)
+        outcome = 1 if self._rng.random() < p1 else 0
+        norm = math.sqrt(p1 if outcome else 1.0 - p1)
+        for i in range(1 << n):
+            bit = 1 if (i & stride) else 0
+            if bit != outcome:
+                state[i] = 0j
+            elif norm > 0:
+                state[i] /= norm
+        return outcome
 
     # --- statevector evolution -------------------------------------------
     def _evolve(self, circuit: Circuit) -> list[complex]:
@@ -160,8 +235,11 @@ class LocalSimulator(Backend):
                 self._apply_cx(state, n, gate.qubits[0], gate.qubits[1])
             elif gate.name == "swap":
                 self._apply_swap(state, n, gate.qubits[0], gate.qubits[1])
+            elif gate.name == "ms":
+                theta = float(gate.params[0]) if gate.params else 0.0
+                self._apply_2q(state, n, _xx_matrix(theta), gate.qubits[0], gate.qubits[1])
             else:
-                m = _gate_matrix(gate.name, gate.params)
+                m = _gate_matrix(gate.name, bound_params(gate.params))
                 self._apply_1q(state, n, m, gate.qubits[0])
         return state
 
@@ -176,8 +254,11 @@ class LocalSimulator(Backend):
                 self._apply_cx(state, n, gate.qubits[0], gate.qubits[1])
             elif gate.name == "swap":
                 self._apply_swap(state, n, gate.qubits[0], gate.qubits[1])
+            elif gate.name == "ms":
+                theta = float(gate.params[0]) if gate.params else 0.0
+                self._apply_2q(state, n, _xx_matrix(theta), gate.qubits[0], gate.qubits[1])
             else:
-                m = _gate_matrix(gate.name, gate.params)
+                m = _gate_matrix(gate.name, bound_params(gate.params))
                 self._apply_1q(state, n, m, gate.qubits[0])
             for q in gate.qubits:
                 if self._rng.random() < p:
@@ -211,6 +292,24 @@ class LocalSimulator(Backend):
             if (i & c_stride) and not (i & t_stride):
                 j = i | t_stride
                 state[i], state[j] = state[j], state[i]
+
+    def _apply_2q(self, state: list[complex], n: int, m: tuple[complex, ...],
+                  q0: int, q1: int) -> None:
+        """Apply an arbitrary 4×4 unitary (row-major, basis 00,01,10,11) to (q0, q1)."""
+        s0 = 1 << (n - 1 - q0)
+        s1 = 1 << (n - 1 - q1)
+        for i in range(1 << n):
+            if (i & s0) or (i & s1):
+                continue  # process each 2-qubit subspace once from its 00 anchor
+            i00 = i
+            i01 = i | s1
+            i10 = i | s0
+            i11 = i | s0 | s1
+            a, b, c, d = state[i00], state[i01], state[i10], state[i11]
+            state[i00] = m[0] * a + m[1] * b + m[2] * c + m[3] * d
+            state[i01] = m[4] * a + m[5] * b + m[6] * c + m[7] * d
+            state[i10] = m[8] * a + m[9] * b + m[10] * c + m[11] * d
+            state[i11] = m[12] * a + m[13] * b + m[14] * c + m[15] * d
 
     # --- measurement ------------------------------------------------------
     def _sample(self, amps: list[complex], circuit: Circuit, shots: int) -> dict[str, int]:

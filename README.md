@@ -108,12 +108,14 @@ print(f"Purity: {purity(rho):.4f}")  # 1.0 for pure state
 from qorch.mitigation import ReadoutMitigator, zne_expectation
 from qorch.backends.simulator import GateNoise, ReadoutNoise, LocalSimulator
 
-# Readout-error mitigation
-mitigator = ReadoutMitigator(sim, cal_shots=8192)
-corrected = mitigator.correct(result)
+# Readout-error mitigation: build from a calibration matrix A[i][j] = P(measure i | prepared j)
+mitigator = ReadoutMitigator.from_calibration_matrix(
+    labels=["0", "1"], matrix=[[0.95, 0.10], [0.05, 0.90]]
+)
+corrected = mitigator.apply(result.counts)
 
-# Zero-noise extrapolation
-zne_result = zne_expectation(sim, circuit, observable, shots=8192, scales=[1, 3, 5])
+# Zero-noise extrapolation (valid for parametrized circuits — true gate inverses)
+zne_result = zne_expectation(sim, circuit, observable, shots=8192, scales=(1, 3, 5))
 
 # Dynamical decoupling
 from qorch.mitigation.dd import insert_dd
@@ -165,7 +167,59 @@ c2 = from_qmi(data)           # roundtrip
 print(QMIEncoder.hexdump(data))  # human-readable hex dump
 ```
 
-### 11. Batch Scheduler
+### 11. Dynamic Circuits (mid-circuit measurement + feed-forward)
+
+Classical registers, mid-circuit measurement, and classically-conditioned gates —
+the basis for teleportation, repeat-until-success, and quantum error correction.
+
+```python
+from qorch import Circuit, LocalSimulator
+from qorch.dynamic import run_teleportation, run_repetition_code
+
+# Teleport |1> with feed-forward X/Z corrections
+marg = run_teleportation(LocalSimulator(seed=1), state_prep=Circuit(1).x(0))
+# {'0': ~0.0, '1': ~1.0}
+
+# 3-qubit bit-flip code corrects a single error via 2-bit syndrome decoding
+res = run_repetition_code(LocalSimulator(seed=1),
+                          state_prep=Circuit(1).x(0), error_qubit=1)
+# res.logical_distribution['1'] ~ 1.0  (error detected and corrected)
+
+# Build dynamic circuits directly:
+c = (Circuit(2, num_clbits=2)
+     .h(0).measure_into(0, 0)     # mid-circuit measurement → classical bit 0
+     .x_if(1, 0, 1)               # feed-forward: X on qubit 1 if bit 0 == 1
+     .measure_into(1, 1))
+```
+
+### 12. Quantum Error Correction
+
+A polynomial-time stabilizer (CHP tableau) simulator scales Clifford circuits to
+hundreds of qubits, enabling real QEC: stabilizer codes, syndrome extraction, and
+threshold estimation.
+
+```python
+from qorch import StabilizerSimulator, Circuit
+from qorch.qec import run_repetition, run_steane, repetition_logical_error_rate
+
+# Stabilizer simulator: 40-qubit GHZ is trivial (intractable for statevector)
+sim = StabilizerSimulator(seed=1)
+
+# Distance-5 repetition code corrects a single (and double) bit-flip
+run_repetition(5, logical=1, errors=(2,)).corrected   # True
+
+# Steane [[7,1,3]] corrects any single-qubit X/Y error via Hamming syndrome
+run_steane(logical=1, error=("x", 4)).corrected        # True
+
+# Threshold: logical error is suppressed with code distance below threshold
+repetition_logical_error_rate(7, 0.08, trials=4000)    # << rate at d=3
+
+# Topological surface (toric) code with an exact MWPM decoder + 2D threshold
+from qorch.surface_code import toric_logical_error_rate
+toric_logical_error_rate(5, 0.05, trials=6000)  # < rate at distance 3 (below ~10% threshold)
+```
+
+### 13. Batch Scheduler
 
 Route multiple circuits to best-fit backends with minimum qubit waste.
 
@@ -178,7 +232,7 @@ jobs = [BatchJob(circuit=c1, shots=1024, label="bell"),
 results = sched.run_batch(jobs)
 ```
 
-### 12. CLI
+### 14. CLI
 
 ```text
 Usage: python -m qorch <command> [options]

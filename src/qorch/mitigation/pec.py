@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from qorch.backends.base import Backend
-from qorch.ir import Circuit, Gate
+from qorch.ir import Circuit, Gate, static_gates
 
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ def _pec_sample(
     pec_gates: list[Gate] = []
     total_weight = 1.0
 
-    for g in circuit.gates:
+    for g in static_gates(circuit.gates):
         pec_gates.append(g)
         p_name, w = _sample_pauli(rng, coeffs, gamma)
         total_weight *= w

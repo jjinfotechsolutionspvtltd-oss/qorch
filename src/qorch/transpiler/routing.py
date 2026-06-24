@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from collections import deque
 
-from qorch.ir import Circuit, Gate
+from qorch.ir import Circuit, Gate, static_gates
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,13 @@ def route(
     When ``qubit_quality`` is provided, the path is weighted by gate fidelity
     so that SWAPs prefer higher-quality qubits.
 
-    Returns a new Circuit with SWAP gates inserted.
+    Routing is **semantically transparent**: single-qubit gates and the final
+    ``measured`` read-out are remapped through the running logical→physical
+    permutation, so the output distribution over *logical* qubits is unchanged
+    (only the physical wiring differs). The final layout is recorded so callers
+    can recover which physical wire each logical qubit ended on.
+
+    Returns a new Circuit with SWAP gates inserted and read-out remapped.
     """
     if not coupling_map.edges:
         return circuit
@@ -145,9 +151,11 @@ def route(
                 return phys
         return lq  # pragma: no cover
 
-    for g in circuit.gates:
+    for g in static_gates(circuit.gates):
         if len(g.qubits) < 2:
-            new_gates.append(g)
+            # remap the single-qubit gate onto its logical qubit's current wire
+            phys = _logical_to_physical(g.qubits[0])
+            new_gates.append(Gate(g.name, (phys,), g.params))
             continue
 
         q0_log = g.qubits[0]
@@ -156,7 +164,7 @@ def route(
         q1_phys = _logical_to_physical(q1_log)
 
         if (q0_phys, q1_phys) in edges_set:
-            new_gates.append(g)
+            new_gates.append(Gate(g.name, (q0_phys, q1_phys), g.params))
             continue
 
         path = _best_swap_path(adj, edges_set, q0_phys, q1_phys, qubit_quality)
@@ -171,7 +179,10 @@ def route(
         q1_phys = _logical_to_physical(q1_log)
         new_gates.append(Gate(g.name, (q0_phys, q1_phys), g.params))
 
-    return replace(circuit, gates=tuple(new_gates))
+    # Remap read-out: to read logical qubit q, measure the physical wire it
+    # now lives on. Output-bitstring order stays in logical order.
+    new_measured = tuple(_logical_to_physical(q) for q in circuit.readout_qubits)
+    return replace(circuit, gates=tuple(new_gates), measured=new_measured)
 
 
 # ── SabreSWAP lookahead router ───────────────────────────────────────────
@@ -221,7 +232,8 @@ def _try_execute_front(
     for i in list(front):
         g = gates[i]
         if len(g.qubits) < 2:
-            output.append(g)
+            phys = _logical_to_physical_inv(phys_map, g.qubits[0])
+            output.append(Gate(g.name, (phys,), g.params))
             executed.add(i)
             front.discard(i)
             n += 1
@@ -360,7 +372,7 @@ def route_lookahead(
                         f"(qubits with edges: {sorted(adj)})"
                     )
 
-    gates = circuit.gates
+    gates = static_gates(circuit.gates)
     phys_map: dict[int, int] = {i: i for i in range(circuit.num_qubits)}
     output: list[Gate] = []
 
@@ -391,4 +403,9 @@ def route_lookahead(
         output.append(Gate("swap", (best_edge[0], best_edge[1])))
         _apply_swap(phys_map, best_edge[0], best_edge[1])
 
-    return replace(circuit, gates=tuple(output))
+    # Remap read-out through the final logical→physical permutation so the
+    # routed circuit is semantically transparent (logical-order bitstrings).
+    new_measured = tuple(
+        _logical_to_physical_inv(phys_map, q) for q in circuit.readout_qubits
+    )
+    return replace(circuit, gates=tuple(output), measured=new_measured)

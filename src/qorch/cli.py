@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from qorch.backends.base import Backend
@@ -25,7 +26,7 @@ def _build_backend(name: str, seed: int | None = None) -> Backend:
     )
 
 
-def _print_histogram(counts: dict[str, float | int], shots: int, label: str = "") -> None:
+def _print_histogram(counts: Mapping[str, float], shots: int, label: str = "") -> None:
     max_key_len = max(len(k) for k in counts) if counts else 1
     max_bar = 50
     top = max(counts.values()) if counts else 1
@@ -137,7 +138,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
     for name in backends:
         backend = _build_backend(name.strip(), seed=args.seed)
         result = backend.run(circuit, shots=args.shots)
-        top = max(result.counts, key=result.counts.get)
+        top = max(result.counts, key=lambda k: result.counts[k])
         frac = result.counts[top] / result.shots
         print(f"{result.backend_name:>25}  {result.shots:>6}  {top:>12}  {frac:>6.3f}")
 
@@ -159,11 +160,12 @@ def cmd_sched(args: argparse.Namespace) -> None:
     print(f"{'Label':>20}  {'Backend':>25}  {'Shots':>6}  {'Top outcome':>12}  {'Frac':>6}")
     print("-" * 80)
     for r in results:
-        if r.error:
+        if r.error or r.result is None:
             print(f"{r.label:>20}  {'ERROR':>25}  {'—':>6}  {r.error:>30}")
         else:
-            top = max(r.result.counts, key=r.result.counts.get)
-            frac = r.result.counts[top] / r.result.shots
+            counts = r.result.counts
+            top = max(counts, key=lambda k: counts[k])
+            frac = counts[top] / r.result.shots
             print(f"{r.label:>20}  {r.backend_name:>25}  {r.result.shots:>6}  {top:>12}  {frac:>6.3f}")
 
 
