@@ -6,10 +6,11 @@ A sovereign, minimal, correct quantum software stack designed for India's emergi
 
 As India invests in indigenous quantum processors (superconducting at TIFR/DRDO, ion traps at IIT Jodhpur, photonic at IISc), a vendor-neutral software stack is essential. qorch provides:
 
-- **No vendor lock-in** — stdlib-only core, zero dependency on IBM Qiskit or Google Cirq (numpy/qiskit are optional extras behind the HAL)
-- **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; air-gappable and reproducible
-- **Correct by construction** — immutable IR, 381 tests, mypy-clean, with property and cross-simulator validation
-- **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack
+- **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
+- **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
+- **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
+- **Correct by construction** — immutable IR, 381 tests (384 with the optional Qiskit extra), mypy-clean, with property and cross-simulator validation.
+- **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
 
