@@ -6,37 +6,69 @@ A sovereign, minimal, correct quantum software stack designed for India's emergi
 
 As India invests in indigenous quantum processors (superconducting at TIFR/DRDO, ion traps at IIT Jodhpur, photonic at IISc), a vendor-neutral software stack is essential. qorch provides:
 
-- **No vendor lock-in** — stdlib-only core, zero dependency on IBM Qiskit or Google Cirq
-- **Sovereign architecture** — clean HAL designed for Indian hardware adapters
-- **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition
+- **No vendor lock-in** — stdlib-only core, zero dependency on IBM Qiskit or Google Cirq (numpy/qiskit are optional extras behind the HAL)
+- **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; air-gappable and reproducible
+- **Correct by construction** — immutable IR, 381 tests, mypy-clean, with property and cross-simulator validation
+- **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack
 
 ## Install
 
 ```bash
-pip install -e .
+pip install -e .            # dependency-free core
+pip install -e .[qiskit]    # optional: Qiskit Aer / IBM hardware adapter
+pip install -e .[dev]       # optional: pytest, ruff, mypy, numpy
 ```
+
+---
 
 ## Features
 
-### 1. Circuit IR + QASM3 ingestion
+Each feature below states **what** it is, **why** it exists, and **how** to use it.
+
+### 1. Circuit IR + serialization
+
+**What.** An immutable circuit value type with builder methods, plus OpenQASM-3 (subset), JSON, and a compact binary format.
+**Why.** A single, correct, hashable representation every layer programs against. Immutability makes transpiler passes safe to compose. Leftmost bit = qubit 0 throughout (one documented convention avoids endianness bugs).
+
 ```python
 from qorch import Circuit, from_qasm3, to_qasm3
 
 c = Circuit(2).h(0).cx(0, 1).measure(0, 1)
 c = from_qasm3('OPENQASM 3.0; qubit[2] q; h q[0]; cx q[0], q[1];')
 qasm = to_qasm3(c)
+json_str = c.to_json(); c2 = Circuit.from_json(json_str)
 ```
 
-### 2. Backends (HAL)
+### 2. Symbolic parameters
 
-| Backend | Qubits | Topology | Native Gates | Modeled On |
+**What.** `Parameter` placeholders for gate angles, bound to numbers later with `Circuit.bind`.
+**Why.** Variational algorithms (VQE/QAOA) evaluate one ansatz at many angles. Build the circuit once and rebind per iteration instead of rebuilding it — fewer allocations and the standard ergonomic pattern.
+
+```python
+from qorch import Circuit, Parameter, LocalSimulator
+
+theta = Parameter("theta")
+ansatz = Circuit(1).rx(0, theta).measure(0)     # built once
+for angle in (0.0, 1.57, 3.14):
+    bound = ansatz.bind({theta: angle})          # or {"theta": angle}
+    LocalSimulator(seed=1).run(bound, shots=1000)
+print(ansatz.parameters)                          # (Parameter(name='theta'),)
+```
+
+### 3. Backends (the hardware-abstraction layer)
+
+**What.** Every execution target — simulator or real QPU — implements the 3-method `Backend` interface (`properties`, `run`, `validate`).
+**Why.** The scheduler, mitigation, and benchmarking layers program against this interface only, so a new QPU is one adapter with zero core changes.
+
+| Backend | Qubits | Topology | Native gates | Notes |
 |---|---|---|---|---|
-| **LocalSimulator** | any | All-to-all | all | Dependency-free statevector |
-| **DensitySimulator** | any | All-to-all | all + noise | Kraus-based noise simulation |
-| `iit-jodhpur-ion-trap` | 6 | All-to-all | rx, ry, ms | IIT Jodhpur trapped-ion |
-| `tifr-superconducting` | 5 | Linear | cx, sx, rz, x | TIFR Mumbai superconducting |
-| `drdo-mirai` | 6 | Grid 2×3 | cx, rx, rz, x | DRDO MIRAI Lab |
-| QiskitBackend | any | varies | varies | IBM/Qiskit Aer adapter |
+| **LocalSimulator** | ~18 | all-to-all | all | dependency-free statevector (+ gate/readout noise, dynamic circuits) |
+| **DensitySimulator** | ~8 | all-to-all | all | Kraus density-matrix sim (T1/T2, depolarizing) |
+| **StabilizerSimulator** | 100s | all-to-all | Clifford | polynomial-time CHP tableau (for QEC) |
+| `iit-jodhpur-ion-trap` | 6 | all-to-all | rx, ry, ms | IIT Jodhpur trapped-ion |
+| `tifr-superconducting` | 5 | linear | cx, sx, rz, x | TIFR Mumbai superconducting |
+| `drdo-mirai` | 6 | grid 2×3 | cx, rx, rz, x | DRDO MIRAI Lab |
+| **QiskitBackend** | any | varies | all 13 gates | IBM / Qiskit Aer adapter (optional) |
 
 ```python
 from qorch import LocalSimulator, IndianQPU
@@ -46,144 +78,172 @@ qpu = IndianQPU.from_preset("tifr-superconducting", seed=42)
 result = qpu.run(Circuit(2).h(0).cx(0, 1), shots=2000)
 ```
 
-### 3. Transpiler — Decompose + Route
+### 4. Device calibration (Backend API v2)
 
-Decompose any circuit to an Indian-native gate set, then route for limited-connectivity topologies.
+**What.** Optional `calibration()` / `coupling_map()` hooks expose structured device data (T1/T2, per-edge error, gate durations, topology). `IndianQPU` can also run an exact T1/T2 noise path.
+**Why.** Calibration-aware compilation and noise-adaptive scheduling need a structured source of truth, not a single fidelity hint. Simple/simulator backends stay a 3-method adapter (defaults return `None`).
 
 ```python
-from qorch.transpiler import transpile, CLIFFORD_T
-from qorch import Circuit
+from qorch import IndianQPU, DeviceCalibration
+from qorch.backends.density_simulator import DensitySimulator
 
-c = Circuit(3).h(0).cx(0, 2).rx(1, 0.5)
+qpu = IndianQPU.from_preset("tifr-superconducting")
+cal: DeviceCalibration = qpu.calibration()
+print(cal.qubits[0].t1_us, cal.coupling_map, cal.gate_durations_us)
 
-# Decompose to TIFR native gates + route for linear topology
-result = transpile(c, target=TIFR_SUPERCONDUCTING, coupling_map=..., use_lookahead=True)
+# exact density-matrix noise driven by T1/T2 from calibration
+noisy = IndianQPU.from_preset("tifr-superconducting", seed=1, exact_noise=True)
+sim = DensitySimulator.from_calibration(cal, seed=0)
 ```
 
-Available targets: `IIT_JODHPUR_ION_TRAP`, `TIFR_SUPERCONDUCTING`, `DRDO_MIRAI`, `CLIFFORD_T`.
+### 5. Transpiler — decompose + route + optimize
 
-### 4. SabreSWAP Lookahead Routing
+**What.** Lower any circuit to a target native gate set, route it for limited connectivity (greedy or SabreSWAP lookahead), and optimize.
+**Why.** Real devices have a fixed gate set and topology. Routing is **semantically transparent** — measurements and single-qubit gates are remapped through the final layout, so results are correct.
 
-Advanced routing that scores candidate SWAPs using a DAG front-layer + extended-layer heuristic, producing fewer SWAPs than greedy routing.
+```python
+from qorch.transpiler import transpile, TIFR_SUPERCONDUCTING, CouplingMap
+
+c = Circuit(3).h(0).cx(0, 2).rx(1, 0.5)
+cmap = CouplingMap(edges=((0, 1), (1, 0), (1, 2), (2, 1)))
+result = transpile(c, target=TIFR_SUPERCONDUCTING, coupling_map=cmap, use_lookahead=True)
+```
+
+Targets: `IIT_JODHPUR_ION_TRAP`, `TIFR_SUPERCONDUCTING`, `DRDO_MIRAI`, `CLIFFORD_T`.
+
+### 6. SabreSWAP lookahead routing
+
+**What.** A router that scores candidate SWAPs with a DAG front-layer + extended-layer heuristic and optional noise-awareness.
+**Why.** Fewer SWAPs than greedy routing, and it can prefer paths through higher-fidelity qubits.
 
 ```python
 from qorch.transpiler.routing import route_lookahead, CouplingMap, QubitQuality
 
 cmap = CouplingMap(edges=((0, 1), (1, 2), (2, 3)))
-# Noise-aware: prefers paths through high-fidelity qubits
 quality = {0: QubitQuality(0.99), 1: QubitQuality(0.95), 2: QubitQuality(0.99), 3: QubitQuality(0.90)}
 routed = route_lookahead(c, cmap, qubit_quality=quality, lookahead=20, decay=0.5)
 ```
 
-### 5. Clifford+T Decomposition
+### 7. Clifford+T decomposition
 
-Decompose arbitrary circuits into the fault-tolerant Clifford+T gate set ({h, cx, t}) with T-count and T-depth reporting.
+**What.** Decompose arbitrary circuits into the fault-tolerant `{h, cx, t}` gate set with T-count and T-depth reporting.
+**Why.** T gates dominate fault-tolerant cost (magic-state distillation); T-count is the headline resource metric.
 
 ```python
 from qorch.transpiler import decompose_to_clifford_t
 
-c = Circuit(2).h(0).cx(0, 1).rz(0, 0.3)
-result, t_count, t_depth = decompose_to_clifford_t(c)
+result, t_count, t_depth = decompose_to_clifford_t(Circuit(2).h(0).cx(0, 1).rz(0, 0.3))
 print(f"T-count: {t_count}, T-depth: {t_depth}")
 ```
 
-T-counts for common gates: T=1, S=2, Z=4, X=5, SX=4, Y=11.
+### 8. Fault-tolerant resource estimation
 
-### 6. State Tomography
-
-Reconstruct 1Q and 2Q density matrices from Pauli-basis measurements.
+**What.** Convert a circuit's Clifford+T cost into a first-order surface-code estimate: code distance, physical qubits, and runtime.
+**Why.** "How big a machine would this need?" is a compelling, fundable output — and it builds on the T-count the decomposer already computes.
 
 ```python
-from qorch.tomography import state_tomography_1q, state_tomography_2q, purity, trace_rho
+from qorch.resource_estimation import estimate_resources, format_estimate
 
-sim = LocalSimulator(seed=42)
-c = Circuit(1).h(0)
-rho = state_tomography_1q(sim, c, shots=4096)
-print(f"Purity: {purity(rho):.4f}")  # 1.0 for pure state
+est = estimate_resources(Circuit(4).h(0).cx(0, 1).t(1).rz(2, 0.3), physical_error_rate=1e-3)
+print(format_estimate(est))   # code distance, physical qubits, est. runtime
 ```
 
-### 7. Error Mitigation
+### 9. Algorithm templates (ADP)
+
+**What.** Ready-made algorithm builders/runners: QFT, Grover's search, QAOA (MaxCut), VQE (H₂), and Quantum Phase Estimation.
+**Why.** High-level entry points that compose on the IR and run on any `Backend`, returning typed result objects.
+
+```python
+from qorch.adp import run_qft, run_grover, run_qaoa, run_vqe, run_qpe
+
+g = run_grover(LocalSimulator(seed=3), num_qubits=3, marked="101", shots=4000)
+print(g.top_outcomes[0])      # ('101', ~3800) — marked state amplified
+```
+
+### 10. State tomography
+
+**What.** Reconstruct 1Q and 2Q density matrices from Pauli-basis measurements.
+**Why.** Characterize a QPU and verify state preparation; reports purity and trace.
+
+```python
+from qorch.tomography import state_tomography_1q, purity
+
+rho = state_tomography_1q(LocalSimulator(seed=42), Circuit(1).h(0), shots=4096)
+print(f"Purity: {purity(rho.rho):.4f}")   # ~1.0 for a pure state
+```
+
+### 11. Error mitigation
+
+**What.** Readout-error correction, zero-noise extrapolation, probabilistic error cancellation, dynamical decoupling, and Pauli twirling.
+**Why.** Squeeze useful signal out of noisy NISQ hardware — qorch's research differentiator.
 
 ```python
 from qorch.mitigation import ReadoutMitigator, zne_expectation
-from qorch.backends.simulator import GateNoise, ReadoutNoise, LocalSimulator
+from qorch.mitigation.dd import insert_dd
 
-# Readout-error mitigation: build from a calibration matrix A[i][j] = P(measure i | prepared j)
+# Readout-error mitigation from a calibration matrix A[i][j] = P(measure i | prepared j)
 mitigator = ReadoutMitigator.from_calibration_matrix(
-    labels=["0", "1"], matrix=[[0.95, 0.10], [0.05, 0.90]]
-)
+    labels=["0", "1"], matrix=[[0.95, 0.10], [0.05, 0.90]])
 corrected = mitigator.apply(result.counts)
 
 # Zero-noise extrapolation (valid for parametrized circuits — true gate inverses)
-zne_result = zne_expectation(sim, circuit, observable, shots=8192, scales=(1, 3, 5))
+zne = zne_expectation(sim, circuit, observable, shots=8192, scales=(1, 3, 5))
 
 # Dynamical decoupling
-from qorch.mitigation.dd import insert_dd
 c_dd = insert_dd(c, sequence="xy4", qubits=(0, 1))
 ```
 
-### 8. Noise-model Builders
+### 12. Noise-model builders
 
-Construct noise models from device-level specifications.
+**What.** Construct gate/readout/Kraus noise models from device specs (fidelity, T1/T2).
+**Why.** Reproduce realistic hardware behavior in simulation to validate mitigation.
 
 ```python
 from qorch.backends.simulator import GateNoise, ReadoutNoise
 from qorch.backends.density_simulator import NoiseChannel
 
-# From gate fidelity
-chan = NoiseChannel.from_gate_fidelity(gate_fidelity=0.99, t1=50e-6, t2=80e-6, t_gate=100e-9)
-
-# Nonsymmetric readout noise
-readout = ReadoutNoise.from_readout_fidelity(fidelity=0.95, symmetric=False)
-
-# Per-gate noise
-gates = GateNoise.from_gate_fidelity(
-    gate_fidelity=0.995, t1=50e-6, t2=80e-6, t_gate=100e-9,
-    gate_names=("h", "cx", "rx"),
-)
+chan = NoiseChannel.from_gate_fidelity(gate_fidelity=0.99, t1_us=50, t2_us=80, gate_time_us=0.1)
+readout = ReadoutNoise.from_readout_fidelity(0.95, asymmetric=True)
+gates = GateNoise.from_gate_fidelity(0.995)
 ```
 
-### 9. Quantum Volume Sweep
+### 13. Benchmarking & certification
 
-Parameterized QV benchmarking across qubit widths to find the maximum QV a device can achieve.
+**What.** Randomized Benchmarking, Quantum Volume (+ sweep), and cross-entropy benchmarking, plus a `certify` CLI suite (Bell, CHSH, RB, QV).
+**Why.** Vendor-neutral "is this QPU any good?" metrics for indigenous hardware — a standards play.
 
 ```python
-from qorch.benchmarking import qv_sweep
+from qorch.benchmarking import qv_sweep, randomized_benchmarking
 
-sim = LocalSimulator(seed=42)
-result = qv_sweep(sim, start_width=2, end_width=5, trials=20, shots=4096)
-print(f"QV = 2^{result.max_passing_width} = {result.quantum_volume}")
+qv = qv_sweep(LocalSimulator(seed=42), start_width=2, end_width=5, trials=20, shots=4096)
+print(f"QV = 2^{qv.max_passing_width} = {qv.quantum_volume}")
 ```
 
-### 10. QMI Binary Format
+### 14. QMI binary format
 
-Compact binary encoding of quantum circuits for QPU microcode and firmware transfer.
+**What.** A compact binary encoding of circuits for QPU microcode / firmware transfer (with input-validated decoding).
+**Why.** Low-latency job submission; 4–10× smaller than JSON/QASM.
 
 ```python
 from qorch.qmi import to_qmi, from_qmi, QMIEncoder
 
-data = to_qmi(circuit)        # 4-10× smaller than JSON/QASM
-c2 = from_qmi(data)           # roundtrip
-print(QMIEncoder.hexdump(data))  # human-readable hex dump
+data = to_qmi(circuit); c2 = from_qmi(data)        # roundtrip
+print(QMIEncoder.hexdump(data))
 ```
 
-### 11. Dynamic Circuits (mid-circuit measurement + feed-forward)
+### 15. Dynamic circuits (mid-circuit measurement + feed-forward)
 
-Classical registers, mid-circuit measurement, and classically-conditioned gates —
-the basis for teleportation, repeat-until-success, and quantum error correction.
+**What.** Classical registers, mid-circuit measurement, reset, and classically-conditioned gates (multi-bit conditions).
+**Why.** The basis for teleportation, repeat-until-success, and quantum error correction — capabilities a static circuit cannot express.
 
 ```python
-from qorch import Circuit, LocalSimulator
 from qorch.dynamic import run_teleportation, run_repetition_code
 
 # Teleport |1> with feed-forward X/Z corrections
-marg = run_teleportation(LocalSimulator(seed=1), state_prep=Circuit(1).x(0))
-# {'0': ~0.0, '1': ~1.0}
+run_teleportation(LocalSimulator(seed=1), state_prep=Circuit(1).x(0))   # {'1': ~1.0}
 
 # 3-qubit bit-flip code corrects a single error via 2-bit syndrome decoding
-res = run_repetition_code(LocalSimulator(seed=1),
-                          state_prep=Circuit(1).x(0), error_qubit=1)
-# res.logical_distribution['1'] ~ 1.0  (error detected and corrected)
+run_repetition_code(LocalSimulator(seed=1), state_prep=Circuit(1).x(0), error_qubit=1)
 
 # Build dynamic circuits directly:
 c = (Circuit(2, num_clbits=2)
@@ -192,56 +252,48 @@ c = (Circuit(2, num_clbits=2)
      .measure_into(1, 1))
 ```
 
-### 12. Quantum Error Correction
+### 16. Quantum error correction
 
-A polynomial-time stabilizer (CHP tableau) simulator scales Clifford circuits to
-hundreds of qubits, enabling real QEC: stabilizer codes, syndrome extraction, and
-threshold estimation.
+**What.** A polynomial-time stabilizer (CHP tableau) simulator, a distance-d repetition code, the Steane [[7,1,3]] code, and a toric surface code with an exact MWPM decoder and a verified ~10% threshold.
+**Why.** The full near-term QEC research loop — stabilizer simulation, syndrome extraction, decoding, and threshold estimation — on a dependency-free core.
 
 ```python
-from qorch import StabilizerSimulator, Circuit
+from qorch import StabilizerSimulator
 from qorch.qec import run_repetition, run_steane, repetition_logical_error_rate
+from qorch.surface_code import toric_logical_error_rate
 
-# Stabilizer simulator: 40-qubit GHZ is trivial (intractable for statevector)
+# Stabilizer simulator scales where statevector cannot (40+ qubit Clifford circuits)
 sim = StabilizerSimulator(seed=1)
 
-# Distance-5 repetition code corrects a single (and double) bit-flip
-run_repetition(5, logical=1, errors=(2,)).corrected   # True
+run_repetition(5, logical=1, errors=(2,)).corrected     # True (distance-5 corrects 2 errors)
+run_steane(logical=1, error=("x", 4)).corrected         # True (Steane corrects any 1-qubit X/Y)
 
-# Steane [[7,1,3]] corrects any single-qubit X/Y error via Hamming syndrome
-run_steane(logical=1, error=("x", 4)).corrected        # True
-
-# Threshold: logical error is suppressed with code distance below threshold
-repetition_logical_error_rate(7, 0.08, trials=4000)    # << rate at d=3
-
-# Topological surface (toric) code with an exact MWPM decoder + 2D threshold
-from qorch.surface_code import toric_logical_error_rate
-toric_logical_error_rate(5, 0.05, trials=6000)  # < rate at distance 3 (below ~10% threshold)
+# Threshold: below ~10%, larger code distance suppresses the logical error rate
+repetition_logical_error_rate(7, 0.08, trials=4000)     # << rate at d=3
+toric_logical_error_rate(5, 0.05, trials=6000)          # < rate at distance 3
 ```
 
-### 13. Batch Scheduler
+### 17. Batch scheduler
 
-Route multiple circuits to best-fit backends with minimum qubit waste.
+**What.** Route multiple circuits to best-fit backends with minimum qubit waste.
+**Why.** A pluggable selection policy that grows into cost/latency-aware routing.
 
 ```python
 from qorch.scheduler import Scheduler, BatchJob
 
 sched = Scheduler(backends=[sim1, qpu2])
-jobs = [BatchJob(circuit=c1, shots=1024, label="bell"),
-        BatchJob(circuit=c2, shots=2048, label="ghz")]
-results = sched.run_batch(jobs)
+results = sched.run_batch([BatchJob(circuit=c1, shots=1024, label="bell")])
 ```
 
-### 14. CLI
+### 18. CLI
 
 ```text
-Usage: python -m qorch <command> [options]
+python -m qorch <command> [options]
 
-Commands:
   run        — Execute a circuit on a backend
   batch      — Compare backends on the same circuit
   sched      — Batch-schedule multiple circuits
-  mitigate   — Run with error mitigation
+  mitigate   — Run with error mitigation (readout / zne / pec)
   transpile  — Decompose for an Indian QPU
   report     — Circuit depth, gate count, fidelity analysis
   certify    — Run QPU certification suite (Bell, CHSH, RB, QV)
@@ -249,84 +301,82 @@ Commands:
   list       — List backends and techniques
 ```
 
-Examples:
 ```bash
-# Run a circuit
 python -m qorch run --gates "h0,cx01" --backend tifr-superconducting
-
-# Run certification suite
 python -m qorch certify --backend local-simulator --shots 4096
-
-# QV sweep
 python -m qorch qv-sweep --backend local-simulator --start 2 --end 5
-
-# Batch schedule multiple circuits
-python -m qorch sched --spec "bell:h0,cx01,measure01" --spec "ghz:h0,cx01,cx01,measure01"
-
-# Transpile for an Indian QPU
 python -m qorch transpile --gates "h0,cx01" --target tifr-superconducting
 ```
+
+---
 
 ## Architecture
 
 ```
 src/qorch/
-  ir.py                 # immutable circuit IR + OpenQASM-3 + JSON serialization
-  cli.py                # command-line interface (12 commands)
-  tomography.py         # 1Q + 2Q state tomography
-  qmi.py                # QMI binary format encoder/decoder
-  scheduler.py          # FIFO queue + batch scheduler with best-fit routing
+  ir.py                  # immutable IR (gates, params, dynamic ops) + QASM-3 + JSON
+  adp.py                 # algorithm templates: QFT, Grover, QAOA, VQE, QPE
+  dynamic.py             # teleportation + repetition code (dynamic circuits)
+  qec.py                 # repetition-d + Steane [[7,1,3]] codes + threshold
+  surface_code.py        # toric code geometry + MWPM decoder + 2D threshold
+  resource_estimation.py # fault-tolerant resource estimates from T-count
+  tomography.py          # 1Q + 2Q state tomography
+  entanglement.py        # Bell fidelity, CHSH, entanglement witness
+  benchmarking.py        # RB, QV (+ sweep), XEB
+  qmi.py                 # QMI binary format (validated decode)
+  scheduler.py           # FIFO queue + best-fit batch scheduler
+  analysis.py            # circuit depth / gate count / fidelity
+  visual.py              # ASCII circuit drawing
+  cli.py                 # command-line interface (9 commands)
   backends/
-    base.py             # Backend interface + BackendProperties + JobResult
-    simulator.py        # dependency-free statevector (+ gate/readout noise)
-    density_simulator.py# Kraus-operator density-matrix simulation
-    indian_backend.py   # Indian QPU adapter (IIT Jodhpur, TIFR, DRDO MIRAI)
+    base.py              # Backend HAL + BackendProperties + DeviceCalibration + JobResult
+    simulator.py         # dependency-free statevector (+ noise + dynamic execution)
+    density_simulator.py # Kraus-operator density-matrix simulation (T1/T2)
+    stabilizer.py        # CHP tableau simulator (polynomial-time Clifford)
+    indian_backend.py    # Indian QPU adapter (IIT Jodhpur, TIFR, DRDO MIRAI)
+    qiskit_backend.py    # IBM / Qiskit Aer adapter (optional dependency)
   transpiler/
-    gateset.py          # Indian-native + Clifford+T gate set definitions
-    decompose.py        # gate decomposition (recursive, supports Clifford+T)
-    routing.py          # qubit routing (greedy + SabreSWAP lookahead)
-    optimizer.py        # circuit optimization passes
+    gateset.py           # Indian-native + Clifford+T gate-set definitions
+    decompose.py         # recursive decomposition (incl. Clifford+T)
+    routing.py           # greedy + SabreSWAP lookahead routing (layout-correct)
+    optimizer.py         # gate cancellation + rotation merging
   mitigation/
-    readout.py          # readout-error calibration & correction
-    zne.py              # zero-noise extrapolation via unitary folding
-    pec.py              # probabilistic error cancellation
-    dd.py               # dynamical decoupling (XY-4, XY-8, CPMG, Hahn)
-    twirling.py         # Pauli twirling for noise tailoring
-  benchmarking.py       # RB, QV, XEB benchmarks + QV sweep
-  analysis.py           # circuit analysis (depth, gate count, fidelity)
-tests/                  # 289 unit tests (92.96% coverage)
+    readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
+tests/                   # 381 unit tests (~94% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 289 tests
-python -m pytest --cov=qorch     # with coverage
-python -m pytest --cov=qorch --cov-report=term-missing  # uncovered lines
+python -m pytest                 # 381 tests
+python -m pytest --cov=qorch     # with coverage (~94%)
+ruff check src/ tests/           # lint
+mypy src/                        # type check
 ```
 
 ## Indian QPU backends
 
-| Backend | Qubits | Topology | Native Gates | Modeled On |
+| Backend | Qubits | Topology | Native gates | Modeled on |
 |---|---|---|---|---|
-| `iit-jodhpur-ion-trap` | 6 | All-to-all | rx, ry, ms | IIT Jodhpur trapped-ion |
-| `tifr-superconducting` | 5 | Linear | cx, sx, rz, x | TIFR Mumbai superconducting |
-| `drdo-mirai` | 6 | Grid 2×3 | cx, rx, rz, x | DRDO MIRAI Lab |
+| `iit-jodhpur-ion-trap` | 6 | all-to-all | rx, ry, ms | IIT Jodhpur trapped-ion |
+| `tifr-superconducting` | 5 | linear | cx, sx, rz, x | TIFR Mumbai superconducting |
+| `drdo-mirai` | 6 | grid 2×3 | cx, rx, rz, x | DRDO MIRAI Lab |
 
 ## Mitigation benchmark
 
 | Technique | Error reduction |
 |---|---|
-| Readout calibration | 95% |
-| ZNE extrapolation | 40% |
-| Dynamical decoupling | Insert XY-4/XY-8/CPMG/Hahn sequences |
+| Readout calibration | ~95% |
+| ZNE extrapolation | ~40% |
+| Dynamical decoupling | inserts XY-4 / XY-8 / CPMG / Hahn sequences |
 
 ## Strategic context
 
 qorch is a research project focused on **Indian quantum readiness**:
-- Clean HAL that any future Indian QPU can implement against
-- Transpiler targeting Indian-native + Clifford+T gate sets
-- State tomography, QV sweep, and certification for hardware validation
+- Clean HAL (with calibration + async-ready hooks) that any future Indian QPU implements against
+- Transpiler targeting Indian-native + Clifford+T gate sets, with layout-correct routing
+- Tomography, QV sweep, and certification for vendor-neutral hardware validation
+- Dynamic circuits + a full QEC stack (stabilizer sim, codes, surface-code threshold)
 - QMI binary format for low-latency QPU communication
-- Error mitigation as a research differentiator
-- No foreign vendor lock-in
+- No foreign vendor lock-in — sovereign, dependency-free core
+```
