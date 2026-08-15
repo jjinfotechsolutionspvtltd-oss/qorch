@@ -20,12 +20,22 @@ from qorch.transpiler.routing import (
     route_with_layout,
 )
 
+from qorch.transpiler.layout import (
+    LAYOUT_METHODS,
+    apply_layout,
+    dense_layout,
+    interaction_graph,
+    noise_adaptive_layout,
+    select_layout,
+    trivial_layout,
+)
 from qorch.transpiler.passes import (
     PassManager,
     PassMetrics,
     PassState,
     TranspileMetrics,
     circuit_pass,
+    layout_pass,
     with_layout,
 )
 
@@ -87,6 +97,7 @@ def transpile(
     use_lookahead: bool = False,
     lookahead: int = 20,
     decay: float = 0.5,
+    layout_method: str = "trivial",
 ) -> Circuit:
     """Full transpile pipeline: decompose → route → lower → optimize → DD.
 
@@ -118,7 +129,7 @@ def transpile(
     """
     return transpile_with_layout(
         circuit, target, coupling_map, qubit_quality, dd_sequence,
-        do_optimize, use_lookahead, lookahead, decay,
+        do_optimize, use_lookahead, lookahead, decay, layout_method,
     ).circuit
 
 
@@ -132,6 +143,7 @@ def transpile_with_layout(
     use_lookahead: bool = False,
     lookahead: int = 20,
     decay: float = 0.5,
+    layout_method: str = "trivial",
 ) -> TranspileResult:
     """:func:`transpile`, additionally reporting the final logical→physical layout.
 
@@ -144,7 +156,7 @@ def transpile_with_layout(
     """
     manager = build_pass_manager(
         target, coupling_map, qubit_quality, dd_sequence,
-        do_optimize, use_lookahead, lookahead, decay,
+        do_optimize, use_lookahead, lookahead, decay, layout_method,
     )
     routed, state, metrics = manager.run(circuit)
     return TranspileResult(
@@ -161,6 +173,7 @@ def build_pass_manager(
     use_lookahead: bool = False,
     lookahead: int = 20,
     decay: float = 0.5,
+    layout_method: str = "trivial",
 ) -> PassManager:
     """Assemble the pipeline :func:`transpile` runs, as an inspectable value.
 
@@ -181,6 +194,12 @@ def build_pass_manager(
     passes: list[tuple[str, object]] = [
         ("decompose", circuit_pass(lambda c: decompose(c, target))),
     ]
+
+    if coupling_map and coupling_map.edges and layout_method != "trivial":
+        def _layout(c: Circuit) -> tuple[Circuit, tuple[int, ...]]:
+            chosen = select_layout(layout_method, c, coupling_map, qubit_quality)
+            return apply_layout(c, chosen), chosen
+        passes.append(("layout", layout_pass(_layout)))
 
     if coupling_map and coupling_map.edges:
         if use_lookahead:
@@ -229,6 +248,14 @@ __all__ = [
     "transpile_with_layout",
     "TranspileResult",
     "build_pass_manager",
+    "apply_layout",
+    "dense_layout",
+    "noise_adaptive_layout",
+    "trivial_layout",
+    "select_layout",
+    "interaction_graph",
+    "LAYOUT_METHODS",
+    "layout_pass",
     "PassManager",
     "PassMetrics",
     "PassState",

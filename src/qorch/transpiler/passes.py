@@ -145,8 +145,26 @@ def circuit_pass(fn: Callable[[Circuit], Circuit]) -> Pass:
 def with_layout(
     fn: Callable[[Circuit], tuple[Circuit, tuple[int, ...]]],
 ) -> Pass:
-    """Lift a routing function that also reports a final layout."""
+    """Lift a routing function that also reports a layout, **composing** layouts.
+
+    Routing reports where the qubit that *entered* on each wire ended up. If a
+    layout pass already moved logical qubit ``q`` onto wire ``state[q]``, then
+    ``q`` finishes on ``routed[state[q]]`` — composition, not replacement.
+
+    Overwriting would be silently correct only while the incoming layout is the
+    identity, i.e. exactly until a layout pass exists. It now does.
+    """
     def run(circuit: Circuit, state: PassState) -> tuple[Circuit, PassState]:
         routed, layout = fn(circuit)
-        return routed, replace(state, final_layout=layout)
+        composed = tuple(layout[wire] for wire in state.final_layout)
+        return routed, replace(state, final_layout=composed)
+    return run
+
+
+def layout_pass(fn: Callable[[Circuit], tuple[Circuit, tuple[int, ...]]]) -> Pass:
+    """Lift a layout function, which *establishes* the initial placement."""
+    def run(circuit: Circuit, state: PassState) -> tuple[Circuit, PassState]:
+        placed, layout = fn(circuit)
+        composed = tuple(layout[wire] for wire in state.final_layout)
+        return placed, replace(state, final_layout=composed)
     return run
