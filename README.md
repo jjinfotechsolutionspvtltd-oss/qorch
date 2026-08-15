@@ -8,7 +8,7 @@
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
 
 ```bash
-pip install -e ".[dev]" && python -m pytest      # 409 tests, ~40s, no services required
+pip install -e ".[dev]" && python -m pytest      # 439 tests, ~40s, no services required
 ```
 
 ```python
@@ -25,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 409 tests, mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 439 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -113,19 +113,37 @@ noisy = IndianQPU.from_preset("tifr-superconducting", seed=1, exact_noise=True)
 sim = DensitySimulator.from_calibration(cal, seed=0)
 ```
 
-### 5. Transpiler — decompose + route + optimize
+### 5. Transpiler — decompose → route → lower → optimize → DD
 
-**What.** Lower any circuit to a target native gate set, route it for limited connectivity (greedy or SabreSWAP lookahead), and optimize.
+**What.** Lower any circuit to a target native gate set, route it for limited connectivity (greedy or SabreSWAP lookahead), lower it again, optimize, and insert dynamical decoupling.
 **Why.** Real devices have a fixed gate set and topology. Routing is **semantically transparent** — measurements and single-qubit gates are remapped through the final layout, so results are correct.
+
+```
+decompose → route → [decompose → fix directions → decompose] → optimize → [insert DD → decompose]
+                     └────────────── lower to target ──────────────┘
+```
+
+**The pipeline is not a single pass in each direction, and the order is load-bearing:**
+
+- **Decomposition runs twice.** Routing inserts `swap` gates *after* the first pass, and `swap` is native to almost no real target. Without the second pass a `swap` survives into the output of a cx/sx/rz/x target — the circuit looks compiled but cannot run.
+- **Direction fixing sits between the two.** Lowering `swap → cx cx cx` emits a *reversed* CX, illegal on a one-way coupling edge. `fix_gate_directions` rewrites it — symmetric gates (`swap`, `ms`) by exchanging operands, `cx` by Hadamard conjugation. Those Hadamards are themselves non-native, hence the final decomposition; it touches only single-qubit gates, so it cannot reintroduce a violation.
+- **DD runs last, after the optimizer.** DD sequences are logically the identity (`xy4 = XYXY = I`, `hahn = XX = I`), so an optimizer that saw them would cancel away exactly the pulses you asked for. Inserting afterwards also measures idle windows against the final circuit.
+
+The guarantee: every gate in the output is in `target.basis_gates`, and every two-qubit gate sits on a `coupling_map` edge **in the direction the hardware implements it**.
 
 Every stage is **dynamic-circuit aware**: mid-circuit measurement and reset follow their qubit through the layout permutation, a conditioned gate decomposes into a sequence carrying that same condition, the lookahead router tracks classical-bit hazards so feed-forward never overtakes the measurement that decides it, and the optimizer refuses to cancel across a measurement or between differently-conditioned gates.
 
 ```python
 from qorch.transpiler import transpile, TIFR_SUPERCONDUCTING, CouplingMap
 
-c = Circuit(3).h(0).cx(0, 2).rx(1, 0.5)
+c = Circuit(3).h(0).cx(0, 2).rz(1, 0.5)          # cx(0,2) is not adjacent → routing inserts SWAPs
 cmap = CouplingMap(edges=((0, 1), (1, 0), (1, 2), (2, 1)))
 result = transpile(c, target=TIFR_SUPERCONDUCTING, coupling_map=cmap, use_lookahead=True)
+
+{g.name for g in result.gates} <= set(TIFR_SUPERCONDUCTING.basis_gates)   # True
+
+# DD survives the optimizer that would otherwise cancel it
+protected = transpile(c, TIFR_SUPERCONDUCTING, coupling_map=cmap, dd_sequence="hahn")
 ```
 
 Targets: `IIT_JODHPUR_ION_TRAP`, `TIFR_SUPERCONDUCTING`, `DRDO_MIRAI`, `CLIFFORD_T`.
@@ -386,17 +404,17 @@ src/qorch/
   transpiler/
     gateset.py           # Indian-native + Clifford+T gate-set definitions
     decompose.py         # recursive decomposition (incl. Clifford+T)
-    routing.py           # greedy + SabreSWAP lookahead routing (layout-correct)
+    routing.py           # greedy + SabreSWAP routing (layout-correct) + edge-direction fixing
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 409 unit tests (~95% coverage)
+tests/                   # 439 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 409 tests
+python -m pytest                 # 439 tests
 python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check
