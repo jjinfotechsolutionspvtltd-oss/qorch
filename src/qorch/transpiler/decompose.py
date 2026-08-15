@@ -6,7 +6,7 @@ import math
 from dataclasses import replace
 from typing import Callable
 
-from qorch.ir import Circuit, Gate, Operation, SUPPORTED_GATES
+from qorch.ir import Circuit, Gate, Operation, Parameter, SUPPORTED_GATES
 from qorch.transpiler.gateset import IndianGateSet
 
 # A decomposition rule takes (qubits, params) and returns a list of native Gates.
@@ -218,67 +218,43 @@ def _sx_to_h_thth(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
 def _rz_to_clifford_t(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
     """Decompose Rz(θ) into H, T gates (Clifford+T).
 
-    For θ = k·π/4 exactly: uses T^k.
-    For arbitrary θ: uses a depth-limited BFS over H/T sequences.
+    Multiples of π/4 are exact (powers of T). Every other angle is approximated
+    by :func:`qorch.transpiler.synthesis.synthesize_rz`, which reports the error
+    it achieved; :func:`clifford_t_synthesis_error` recovers that for a whole
+    circuit so a caller is never left guessing how good the compilation was.
     """
+    from qorch.transpiler.synthesis import synthesize_rz
+
     q = qubits[0]
-    theta = params[0] if params else 0.0
-    target = theta * 4 / math.pi
-    k = round(target)
+    theta = float(params[0]) if params else 0.0
+    result = synthesize_rz(theta)
+    return [Gate(name, (q,)) for name in result.gates]
 
-    if abs(target - k) < 1e-12:
-        k_mod = k % 8
-        if k_mod == 0:
-            return []
-        gates: list[Gate] = []
-        for _ in range(k_mod):
-            gates.append(Gate("t", (q,)))
-        return gates
 
-    import cmath
-    from collections import deque
+def clifford_t_synthesis_error(circuit: Circuit, precision: float | None = None) -> float:
+    """Worst-case single-rotation approximation error in compiling to Clifford+T.
 
-    def _target_mat(angle: float) -> tuple[complex, ...]:
-        return (cmath.exp(-1j * angle / 2), 0j, 0j, cmath.exp(1j * angle / 2))
+    Returns ``0.0`` when every rotation in the circuit lands on a multiple of
+    π/4 and the compilation is exact. Otherwise this is the largest ``1 -
+    fidelity`` any one rotation incurs — a floor on the circuit's total error,
+    not the total itself, which also depends on how the errors compose.
 
-    def _apply_h(m: tuple[complex, ...]) -> tuple[complex, ...]:
-        a, b, c, d = m
-        s = 1 / math.sqrt(2)
-        return (s * a + s * c, s * b + s * d, s * a - s * c, s * b - s * d)
+    Exposed because Clifford+T cannot represent an arbitrary angle at all: some
+    error is unavoidable, and an estimate built on the resulting T-count is only
+    as meaningful as the approximation underneath it.
+    """
+    from qorch.transpiler.synthesis import DEFAULT_PRECISION, synthesize_rz
 
-    def _apply_t(m: tuple[complex, ...]) -> tuple[complex, ...]:
-        a, b, c, d = m
-        e = cmath.exp(1j * math.pi / 8)
-        return (a * 1 / e, b * 1 / e, c * e, d * e)
-
-    target_mat = _target_mat(theta)
-    best_seq: list[Gate] = []
-    best_fid = -1.0
-
-    qq: deque[tuple[tuple[complex, ...], list[Gate]]] = deque()
-    qq.append(((1j, 0j, 0j, 1j), []))  # | to make complex
-
-    while qq:
-        mat, seq = qq.popleft()
-        fid = 0.5 * abs(
-            mat[0].conjugate() * target_mat[0] +
-            mat[1].conjugate() * target_mat[1] +
-            mat[2].conjugate() * target_mat[2] +
-            mat[3].conjugate() * target_mat[3]
-        )
-        if fid > best_fid:
-            best_fid = fid
-            best_seq = seq
-
-        if fid > 0.99999 or len(seq) >= 8:
+    target = DEFAULT_PRECISION if precision is None else precision
+    worst = 0.0
+    for op in circuit.gates:
+        if not isinstance(op, Gate) or op.name not in ("rx", "ry", "rz"):
             continue
-
-        h_seq = seq + [Gate("h", (q,))]
-        qq.append((_apply_h(mat), h_seq))
-        t_seq = seq + [Gate("t", (q,))]
-        qq.append((_apply_t(mat), t_seq))
-
-    return best_seq if best_seq else [Gate("t", (q,))]
+        if not op.params or isinstance(op.params[0], Parameter):
+            continue
+        # rx/ry lower through rz, so the rotation angle is what matters here.
+        worst = max(worst, synthesize_rz(float(op.params[0]), target).error)
+    return worst
 
 
 # ── Clifford+T decomposition rule helpers ─────────────────────────────────
