@@ -38,6 +38,15 @@ source = ["src/qorch"]
 line-length = 100
 target-version = "py311"
 
+# Pin the rule set explicitly instead of inheriting ruff's defaults. CI installs
+# ruff unpinned (`ruff>=0.5`), so a default-set change upstream lands as a red
+# build on an unrelated PR — ruff 0.16 adding isort (I001) flagged 115
+# pre-existing import blocks across the repo, none of them new code. These four
+# are the defaults the codebase was written against; adopting isort is a
+# deliberate repo-wide reformat, not something a dependency bump should force.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = false
