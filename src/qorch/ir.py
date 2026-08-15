@@ -65,6 +65,17 @@ def static_gates(ops: "tuple[Operation, ...]") -> "tuple[Gate, ...]":
     return tuple(out)
 
 
+def with_qubits(op: "Operation", qubits: tuple[int, ...]) -> "Operation":
+    """Return ``op`` acting on ``qubits`` instead, preserving everything else.
+
+    Routing permutes which *physical* wire each logical qubit lives on; every
+    other attribute (classical condition, measurement target bit, params) must
+    survive that rewrite untouched. Passes use this instead of reconstructing
+    ops by hand, which is how conditions get silently dropped.
+    """
+    return replace(op, qubits=qubits)
+
+
 @dataclass(frozen=True)
 class Gate:
     """A single unitary operation on one or more qubits.

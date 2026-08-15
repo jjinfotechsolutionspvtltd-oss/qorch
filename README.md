@@ -102,6 +102,8 @@ sim = DensitySimulator.from_calibration(cal, seed=0)
 **What.** Lower any circuit to a target native gate set, route it for limited connectivity (greedy or SabreSWAP lookahead), and optimize.
 **Why.** Real devices have a fixed gate set and topology. Routing is **semantically transparent** — measurements and single-qubit gates are remapped through the final layout, so results are correct.
 
+Every stage is **dynamic-circuit aware**: mid-circuit measurement and reset follow their qubit through the layout permutation, a conditioned gate decomposes into a sequence carrying that same condition, the lookahead router tracks classical-bit hazards so feed-forward never overtakes the measurement that decides it, and the optimizer refuses to cancel across a measurement or between differently-conditioned gates.
+
 ```python
 from qorch.transpiler import transpile, TIFR_SUPERCONDUCTING, CouplingMap
 
@@ -251,6 +253,15 @@ c = (Circuit(2, num_clbits=2)
      .h(0).measure_into(0, 0)     # mid-circuit measurement → classical bit 0
      .x_if(1, 0, 1)               # feed-forward: X on qubit 1 if bit 0 == 1
      .measure_into(1, 1))
+
+# Dynamic circuits compile like any other — same classical-register distribution
+from qorch.transpiler import transpile, TIFR_SUPERCONDUCTING, CouplingMap
+from qorch.dynamic import repetition_code_circuit
+
+code = repetition_code_circuit(error_qubit=1)
+native = transpile(code, TIFR_SUPERCONDUCTING,
+                   coupling_map=CouplingMap(TIFR_SUPERCONDUCTING.coupling_map))
+LocalSimulator(seed=7).run(native, shots=200).counts    # {'110': 200} — syndrome 11, logical 0
 ```
 
 ### 16. Quantum error correction
@@ -286,7 +297,26 @@ sched = Scheduler(backends=[sim1, qpu2])
 results = sched.run_batch([BatchJob(circuit=c1, shots=1024, label="bell")])
 ```
 
-### 18. CLI
+### 18. Pulse-level control
+
+**What.** Complex baseband waveforms (constant / Gaussian / DRAG), an exact rotating-frame single-qubit simulator, and calibration helpers that reproduce gates from physical pulses.
+**Why.** The gate IR hides *how* a gate is physically realized; calibration and pulse-aware compilation bottom out here. Closed-form per-slice evolution, so it stays dependency-free.
+
+```python
+from qorch import Waveform, x_pulse, sx_pulse, calibrate_gaussian, pulse_unitary
+
+from qorch.pulse import equals_gate
+
+equals_gate(pulse_unitary(x_pulse()), (0, 1, 1, 0))   # True — the π pulse *is* X
+sx = pulse_unitary(sx_pulse())                        # two of these compose to X
+
+# A θ-area pulse drives |0> to P(1) = sin²(θ/2) — exact Rabi physics
+p1 = abs(pulse_unitary(calibrate_gaussian(1.3))[2]) ** 2   # index 2 = U[1,0]
+
+Waveform.drag(duration=20, amp=1.0, sigma=5.0, beta=0.3)   # leakage-suppressing DRAG
+```
+
+### 19. CLI
 
 ```text
 python -m qorch <command> [options]
@@ -318,6 +348,7 @@ src/qorch/
   ir.py                  # immutable IR (gates, params, dynamic ops) + QASM-3 + JSON
   adp.py                 # algorithm templates: QFT, Grover, QAOA, VQE, QPE
   dynamic.py             # teleportation + repetition code (dynamic circuits)
+  pulse.py               # waveforms + rotating-frame pulse simulator + calibration
   qec.py                 # repetition-d + Steane [[7,1,3]] codes + threshold
   surface_code.py        # toric code geometry + MWPM decoder + 2D threshold
   resource_estimation.py # fault-tolerant resource estimates from T-count
@@ -343,14 +374,14 @@ src/qorch/
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 381 unit tests (~94% coverage)
+tests/                   # 409 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 381 tests
-python -m pytest --cov=qorch     # with coverage (~94%)
+python -m pytest                 # 409 tests
+python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check
 ```
