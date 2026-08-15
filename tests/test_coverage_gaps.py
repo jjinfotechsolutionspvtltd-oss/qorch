@@ -468,11 +468,15 @@ class TestIndianBackendGaps:
     def test_h_and_identity_matrix(self):
         from qorch.backends.indian_backend import _indian_gate_matrix
         import math
+        import pytest
         h = _indian_gate_matrix("h", ())
         inv = 1.0 / math.sqrt(2)
         assert abs(h[0] - inv) < 1e-12
-        ident = _indian_gate_matrix("bogus", ())
-        assert ident == (1, 0, 0, 1)
+        # An unknown gate used to fall back to the identity, which silently
+        # turned an unrecognized operation into a no-op and changed what the
+        # circuit computed with no error raised. It now rejects the name.
+        with pytest.raises(ValueError, match="unknown gate"):
+            _indian_gate_matrix("bogus", ())
 
     def test_swap_in_indian_evolve(self):
         from qorch.backends.indian_backend import IndianQPU, IndianQPUConfig
