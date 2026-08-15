@@ -20,12 +20,14 @@ from qorch.transpiler.routing import (
     route_with_layout,
 )
 
+from qorch.transpiler.cost import CostEstimate, compare_costs, estimate_cost
 from qorch.transpiler.fusion import cancel_commuting, fuse_single_qubit_runs
 from qorch.transpiler.layout import (
     LAYOUT_METHODS,
     apply_layout,
     dense_layout,
     interaction_graph,
+    cost_aware_layout,
     noise_adaptive_layout,
     select_layout,
     trivial_layout,
@@ -100,6 +102,7 @@ def transpile(
     decay: float = 0.5,
     layout_method: str = "trivial",
     do_fusion: bool = True,
+    calibration=None,
 ) -> Circuit:
     """Full transpile pipeline: decompose → route → lower → optimize → DD.
 
@@ -132,6 +135,7 @@ def transpile(
     return transpile_with_layout(
         circuit, target, coupling_map, qubit_quality, dd_sequence,
         do_optimize, use_lookahead, lookahead, decay, layout_method, do_fusion,
+        calibration,
     ).circuit
 
 
@@ -147,6 +151,7 @@ def transpile_with_layout(
     decay: float = 0.5,
     layout_method: str = "trivial",
     do_fusion: bool = True,
+    calibration=None,
 ) -> TranspileResult:
     """:func:`transpile`, additionally reporting the final logical→physical layout.
 
@@ -160,6 +165,7 @@ def transpile_with_layout(
     manager = build_pass_manager(
         target, coupling_map, qubit_quality, dd_sequence,
         do_optimize, use_lookahead, lookahead, decay, layout_method, do_fusion,
+        calibration,
     )
     routed, state, metrics = manager.run(circuit)
     return TranspileResult(
@@ -178,6 +184,7 @@ def build_pass_manager(
     decay: float = 0.5,
     layout_method: str = "trivial",
     do_fusion: bool = True,
+    calibration=None,
 ) -> PassManager:
     """Assemble the pipeline :func:`transpile` runs, as an inspectable value.
 
@@ -201,7 +208,9 @@ def build_pass_manager(
 
     if coupling_map and coupling_map.edges and layout_method != "trivial":
         def _layout(c: Circuit) -> tuple[Circuit, tuple[int, ...]]:
-            chosen = select_layout(layout_method, c, coupling_map, qubit_quality)
+            chosen = select_layout(
+                layout_method, c, coupling_map, qubit_quality, calibration
+            )
             return apply_layout(c, chosen), chosen
         passes.append(("layout", layout_pass(_layout)))
 
@@ -277,6 +286,10 @@ __all__ = [
     "noise_adaptive_layout",
     "trivial_layout",
     "select_layout",
+    "cost_aware_layout",
+    "estimate_cost",
+    "compare_costs",
+    "CostEstimate",
     "interaction_graph",
     "LAYOUT_METHODS",
     "layout_pass",
