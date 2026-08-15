@@ -202,17 +202,29 @@ def _t_power(theta: float) -> tuple[tuple[str, ...], float]:
     return ("t",) * (k % 8), error
 
 
-def _search(target: _Mat, depth: int, left_max: int) -> tuple[float, str]:
-    """Best H/T word for ``target``, as (fidelity, word), in circuit order.
+def _search(target: _Mat, depth: int, left_max: int, precision: float) -> tuple[float, str]:
+    """Cheapest adequate H/T word for ``target``, as (fidelity, word).
 
-    Ranking is by fidelity, then by word length. Ranking by T-count instead —
-    H being Clifford and free, T being the distilled resource — sounds better and
-    measurably changes nothing: exact fidelity ties are vanishingly rare in
-    floating point, so the tie-break almost never fires, and the words found are
-    already T-minimal among equally accurate candidates.
+    "Cheapest adequate", not "most accurate". Once a word is within ``precision``
+    the extra accuracy of a longer one is worth nothing and costs T gates, which
+    are the resource every downstream estimate counts. Maximizing fidelity
+    instead produced the perverse result that searching a *deeper* table returned
+    a *more expensive* word — ry(1.1) cost 23 T at depth 26 and 27 T at depth 28
+    for the same 2.3e-4 error — and made the answer depend on exactly which depth
+    the escalation happened to stop at. That in turn made T-counts vary across
+    platforms, because the table is built with float rounding at its dedup
+    boundary and a different Python can land on a different escalation step.
+
+    Among words meeting ``precision``, fewest T gates wins, then shortest. If
+    nothing meets it, the most accurate candidate is returned so the caller can
+    escalate to a deeper table.
     """
     items, index = _table(depth)
+    best_key: tuple[int, int] | None = None
+    best_ok: tuple[float, str] | None = None
     best_fidelity, best_word = -1.0, ""
+    threshold = 1.0 - precision
+
     for word_u, mat_u in items:
         if len(word_u) > left_max:
             continue
@@ -221,8 +233,17 @@ def _search(target: _Mat, depth: int, left_max: int) -> tuple[float, str]:
         for word_v, mat_v in index.near(need):
             f = fidelity(_mul(mat_v, mat_u), target)
             word = word_u + word_v
-            if f > best_fidelity or (f == best_fidelity and len(word) < len(best_word)):
+            if f >= threshold:
+                key = (word.count("t"), len(word))
+                if best_key is None or key < best_key:
+                    best_key, best_ok = key, (f, word)
+            elif best_key is None and (
+                f > best_fidelity or (f == best_fidelity and len(word) < len(best_word))
+            ):
                 best_fidelity, best_word = f, word
+
+    if best_ok is not None:
+        return best_ok
     return best_fidelity, best_word
 
 
@@ -233,7 +254,7 @@ def _escalating_search(target: _Mat, precision: float) -> SynthesisResult:
     """Search at increasing depth until ``precision`` is met or the table runs out."""
     best: SynthesisResult | None = None
     for achievable, depth, left_max in _DEPTH_FOR_PRECISION:
-        f, word = _search(target, depth, left_max)
+        f, word = _search(target, depth, left_max, precision)
         best = SynthesisResult(gates=tuple(word), error=1.0 - f, exact=False)
         if best.error <= precision:
             break

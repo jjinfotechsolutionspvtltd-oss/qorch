@@ -8,7 +8,7 @@
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
 
 ```bash
-pip install -e ".[dev]" && python -m pytest      # 604 tests, ~40s, no services required
+pip install -e ".[dev]" && python -m pytest      # 605 tests, ~40s, no services required
 ```
 
 ```python
@@ -25,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 604 tests, mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 605 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -166,7 +166,9 @@ routed = route_lookahead(c, cmap, qubit_quality=quality, lookahead=20, decay=0.5
 **What.** Decompose arbitrary circuits into the fault-tolerant `{h, cx, t}` gate set with T-count and T-depth reporting, including **meet-in-the-middle synthesis** of arbitrary-angle rotations.
 **Why.** T gates dominate fault-tolerant cost (magic-state distillation); T-count is the headline resource metric.
 
-Clifford+T is a *discrete* gate set: multiples of π/4 are exact (powers of T), and every other angle must be approximated. qorch reaches **error ≤ 1e-3 in ~24 T gates** — close to the ~3·log₂(1/ε) an optimal synthesizer needs — and **always reports the error it achieved**.
+Clifford+T is a *discrete* gate set: multiples of π/4 are exact (powers of T), and every other angle must be approximated. qorch reaches **error ≤ 1e-3 in ~18–22 T gates** — at or under the ~3·log₂(1/ε) an optimal synthesizer needs — and **always reports the error it achieved**.
+
+The search returns the *cheapest* word meeting the requested precision, not the most accurate one it can find. Past the target, extra accuracy is worth nothing and costs T gates.
 
 All three rotation axes cost the same. `rx` is `H·rz·H` and `H` is native, so its conjugation is free; `ry` is searched *directly* rather than via `rz(-π/2)·rx(θ)·rz(π/2)`, which would be exact but spell two Clifford quarter-turns as `T⁶` and `T²` — eight T gates a resource estimate then counts as magic states.
 
@@ -424,13 +426,13 @@ src/qorch/
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 604 unit tests (~95% coverage)
+tests/                   # 605 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 604 tests
+python -m pytest                 # 605 tests
 python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check
