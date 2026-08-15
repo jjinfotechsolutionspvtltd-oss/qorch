@@ -91,6 +91,74 @@ def insert_dd(
     return replace(circuit, gates=tuple(new_gates))
 
 
+def insert_dd_timed(
+    circuit: Circuit,
+    sequence: str = "xy4",
+    qubits: tuple[int, ...] | None = None,
+    calibration=None,
+    min_idle_ns: float | None = None,
+) -> Circuit:
+    """Insert DD only into idle windows long enough to actually hold the pulses.
+
+    :func:`insert_dd` measures idleness in *gate slots*, which is not what
+    decoherence responds to. A gap of three ``rz`` frame changes takes no time at
+    all, and a gap of one CX takes 300 ns; slot counting treats the first as the
+    bigger opportunity. It will therefore pack a refocusing sequence into a
+    window too short to contain it, and skip a genuinely long one.
+
+    This variant schedules the circuit, measures each window in nanoseconds, and
+    inserts the sequence only where the pulses fit. ``min_idle_ns`` defaults to
+    the sequence's own duration — there is no point protecting a gap with pulses
+    that do not fit inside it.
+    """
+    from qorch.transpiler.scheduling import op_duration_ns, schedule_asap
+
+    if sequence not in DD_SEQUENCES:
+        raise ValueError(f"unknown DD sequence: {sequence!r}. Options: {list(DD_SEQUENCES)}")
+
+    seq = DD_SEQUENCES[sequence]
+    pulse_ns = sum(
+        op_duration_ns(Gate(name, (0,)), calibration) for name, in seq
+    )
+    threshold = pulse_ns if min_idle_ns is None else min_idle_ns
+
+    schedule = schedule_asap(circuit, calibration)
+    targets = set(qubits) if qubits else set(range(circuit.num_qubits))
+
+    # Map each op to its index so windows can be tied back to insertion points.
+    positions = {id(s.op): i for i, s in enumerate(schedule.ops)}
+    insertions: dict[int, list[Gate]] = {}
+
+    tail: list[Gate] = []
+    for q in sorted(targets):
+        busy = [s for s in schedule.ops if q in s.op.qubits]
+        if not busy:
+            continue
+        for current, following in zip(busy, busy[1:]):
+            gap = following.start_ns - current.end_ns
+            if gap >= threshold > 0:
+                index = positions[id(following.op)]
+                insertions.setdefault(index, []).extend(
+                    Gate(name, (q,)) for name, in seq
+                )
+        # The trailing window — from a qubit's last gate to the end of the
+        # circuit — is usually the longest one, and with terminal read-out the
+        # qubit is decaying throughout it.
+        trailing = schedule.duration_ns - busy[-1].end_ns
+        if trailing >= threshold > 0:
+            tail.extend(Gate(name, (q,)) for name, in seq)
+
+    if not insertions and not tail:
+        return circuit
+
+    out: list = []
+    for index, op in enumerate(circuit.gates):
+        out.extend(insertions.get(index, ()))
+        out.append(op)
+    out.extend(tail)
+    return replace(circuit, gates=tuple(out))
+
+
 def apply_dd_mitigation(
     circuit: Circuit,
     backend,
