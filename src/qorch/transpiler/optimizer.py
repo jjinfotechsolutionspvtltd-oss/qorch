@@ -79,10 +79,18 @@ def _cancel_self_inverse(gates: list[Operation]) -> list[Operation]:
         ):
             result.pop()
             continue
+        # A self-inverse two-qubit gate cancels only against an *identical*
+        # application. swap is symmetric, so either operand order is the same
+        # gate. cx is not: cx(a,b)·cx(b,a) permutes the two wires, it is not the
+        # identity — and that exact pair is what swap → cx·cx·cx produces, so
+        # matching on the unordered qubit set silently corrupted routed circuits.
         if (
             prev.name == g.name
-            and set(prev.qubits) == set(g.qubits) and len(g.qubits) == 2
-            and g.name in ("cx", "swap")
+            and len(g.qubits) == 2
+            and (
+                (g.name == "swap" and set(prev.qubits) == set(g.qubits))
+                or (g.name == "cx" and prev.qubits == g.qubits)
+            )
         ):
             result.pop()
             continue

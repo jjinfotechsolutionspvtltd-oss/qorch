@@ -96,6 +96,54 @@ def test_decompose_leaves_unconditional_gates_unconditional():
     assert None in _conditions(out)
 
 
+def test_routed_dynamic_circuit_redecomposes_to_native_gates():
+    """The SWAPs routing inserts into a *dynamic* circuit get lowered too.
+
+    Routing runs after the first decomposition pass, so its SWAPs reach the
+    output unless the pipeline lowers again — and that second pass walks over
+    mid-circuit measurement, reset, and feed-forward, so it must leave them
+    intact and keep propagating conditions onto every expansion it makes.
+    """
+    c = (
+        Circuit(5, num_clbits=1)
+        .h(0)
+        .cx(0, 4)                       # opposite ends of the line → forces SWAPs
+        .measure_into(0, 0)
+        .reset(0)
+        .gate_if("h", (4,), ((0, 1),))  # feed-forward, and h is not native
+    )
+    out = transpile(c, TIFR_SUPERCONDUCTING, coupling_map=_LINE_5)
+
+    gate_names = {op.name for op in out.gates if isinstance(op, Gate)}
+    assert gate_names <= set(TIFR_SUPERCONDUCTING.basis_gates)
+    assert "swap" not in gate_names
+
+    assert any(isinstance(op, Measure) and op.cbit == 0 for op in out.gates)
+    assert any(isinstance(op, Reset) for op in out.gates)
+
+    # The conditioned h expanded into several native gates, each still gated on c0.
+    conditioned = [op for op in out.gates if op.condition == ((0, 1),)]
+    assert len(conditioned) > 1
+    assert all(isinstance(op, Gate) and op.name in TIFR_SUPERCONDUCTING.basis_gates
+               for op in conditioned)
+
+
+def test_dynamic_circuit_stays_correct_on_a_one_way_coupling_map():
+    """Feed-forward survives SWAP lowering *and* the CX direction flips it needs."""
+    one_way = CouplingMap(((0, 1), (1, 2), (2, 3)))
+    c = teleportation_circuit(state_prep=Circuit(1).x(0))
+    native = transpile(c, TIFR_SUPERCONDUCTING, coupling_map=one_way)
+
+    assert {op.name for op in native.gates if isinstance(op, Gate)} <= set(
+        TIFR_SUPERCONDUCTING.basis_gates
+    )
+    assert all(op.qubits in set(one_way.edges) for op in native.gates if len(op.qubits) == 2)
+
+    counts = LocalSimulator(seed=11).run(native, shots=200).counts
+    assert sum(counts.values()) == 200
+    assert all(key[2] == "1" for key in counts)   # c2 = the teleported bit
+
+
 # ── routing ──────────────────────────────────────────────────────────────
 
 

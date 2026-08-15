@@ -92,3 +92,33 @@ def test_optimize_full_stack():
     assert len(opt.gates) <= len(decomposed.gates)
     result = qpu.run(opt, shots=2000)
     assert result.counts.get("00", 0) + result.counts.get("11", 0) > 0
+
+
+def test_reversed_cx_pair_does_not_cancel():
+    """cx(a,b) · cx(b,a) is a rewiring, not the identity.
+
+    Matching on the unordered qubit *set* made the optimizer delete this pair —
+    and it is exactly the pair ``swap → cx(a,b) cx(b,a) cx(a,b)`` produces, so
+    every routed circuit lowered on a target without a native SWAP was silently
+    corrupted.
+    """
+    circuit = Circuit(num_qubits=2).x(0).cx(0, 1).cx(1, 0)
+    opt = optimize(circuit)
+
+    assert [g.name for g in opt.gates] == ["x", "cx", "cx"]
+    assert (
+        LocalSimulator(seed=1).run(opt, shots=200).counts
+        == LocalSimulator(seed=1).run(circuit, shots=200).counts
+    )
+
+
+def test_identical_cx_pair_still_cancels():
+    """Same control, same target → genuinely the identity."""
+    circuit = Circuit(num_qubits=2).cx(0, 1).cx(0, 1)
+    assert len(optimize(circuit).gates) == 0
+
+
+def test_reversed_swap_pair_still_cancels():
+    """swap is symmetric, so swap(a,b) · swap(b,a) really is the identity."""
+    circuit = Circuit(num_qubits=2).swap(0, 1).swap(1, 0)
+    assert len(optimize(circuit).gates) == 0
