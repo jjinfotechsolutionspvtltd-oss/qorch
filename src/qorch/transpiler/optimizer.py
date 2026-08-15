@@ -15,13 +15,22 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
+from qorch.gates import GATES, ROTATION_GATES, SELF_INVERSE_GATES
 from qorch.ir import Circuit, Gate, Operation, Parameter
 
-# Gate pairs that cancel: (g1, g2) on the same qubits → identity
-_SELF_INVERSE: frozenset[str] = frozenset({"h", "x", "y", "z", "sx"})
+# Gate pairs that cancel: (g1, g2) on the same qubits → identity.
+#
+# Derived from the registry rather than hand-listed. The hand-written version
+# included ``sx``, which is a *fourth* root of the identity — SX·SX = X, not I —
+# so the optimizer cancelled adjacent sx pairs and silently turned a circuit
+# that outputs 1 into one that outputs 0. The IR's own list had it right; the
+# two simply drifted, which is what the registry exists to prevent.
+_SELF_INVERSE: frozenset[str] = frozenset(
+    n for n in SELF_INVERSE_GATES if GATES[n].arity == 1
+)
 
 # Rotation gate types (angle-modulable)
-_ROTATION_GATES: frozenset[str] = frozenset({"rx", "ry", "rz"})
+_ROTATION_GATES: frozenset[str] = ROTATION_GATES
 
 
 def _combinable(prev: Operation, op: Operation) -> bool:

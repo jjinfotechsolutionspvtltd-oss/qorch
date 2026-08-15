@@ -11,12 +11,15 @@ import json
 import re
 from dataclasses import dataclass, replace
 
+from qorch.gates import (
+    ANGLE_INVERSE_GATES,
+    SELF_INVERSE_GATES,
+    SUPPORTED_GATE_NAMES,
+)
+
 # Gates the slice understands. Adapters/transpilers may lower these further.
-# Extended for transpiler: sx, rz, rx, ry, swap, ms (Mølmer–Sørensen for ion trap)
-# t (Clifford+T) added for fault-tolerant decomposition
-SUPPORTED_GATES: frozenset[str] = frozenset({
-    "h", "x", "y", "z", "cx", "sx", "rz", "rx", "ry", "swap", "ms", "id", "t"
-})
+# Derived from the gate registry so the set cannot drift from the definitions.
+SUPPORTED_GATES: frozenset[str] = SUPPORTED_GATE_NAMES
 
 
 @dataclass(frozen=True)
@@ -373,10 +376,10 @@ class Circuit:
 
 
 # --- gate algebra ---------------------------------------------------------
-# Gates equal to their own inverse (G·G = I).
-_SELF_INVERSE_GATES: frozenset[str] = frozenset({"h", "x", "y", "z", "cx", "swap", "id"})
-# Gates whose inverse negates the rotation angle.
-_ANGLE_GATES: frozenset[str] = frozenset({"rx", "ry", "rz", "ms"})
+# Both derived from the gate registry (see qorch.gates), so "is this gate its
+# own inverse?" has exactly one answer in the codebase.
+_SELF_INVERSE_GATES: frozenset[str] = SELF_INVERSE_GATES
+_ANGLE_GATES: frozenset[str] = ANGLE_INVERSE_GATES
 
 
 def inverse_gates(gate: "Gate") -> list["Gate"]:
