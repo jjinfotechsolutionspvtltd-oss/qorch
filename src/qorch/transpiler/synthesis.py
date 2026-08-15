@@ -182,6 +182,11 @@ def _rz_matrix(theta: float) -> _Mat:
     return (cmath.exp(-1j * theta / 2), 0j, 0j, cmath.exp(1j * theta / 2))
 
 
+def _ry_matrix(theta: float) -> _Mat:
+    c, s = math.cos(theta / 2), math.sin(theta / 2)
+    return (complex(c), complex(-s), complex(s), complex(c))
+
+
 def _t_power(theta: float) -> tuple[tuple[str, ...], float]:
     """Nearest T^k to Rz(θ), with the error that costs. T = Rz(π/4) up to phase.
 
@@ -197,11 +202,29 @@ def _t_power(theta: float) -> tuple[tuple[str, ...], float]:
     return ("t",) * (k % 8), error
 
 
-def _search(theta: float, depth: int, left_max: int) -> tuple[float, str]:
-    """Best H/T word for Rz(θ), as (fidelity, word). Word is in circuit order."""
+def _search(target: _Mat, depth: int, left_max: int, precision: float) -> tuple[float, str]:
+    """Cheapest adequate H/T word for ``target``, as (fidelity, word).
+
+    "Cheapest adequate", not "most accurate". Once a word is within ``precision``
+    the extra accuracy of a longer one is worth nothing and costs T gates, which
+    are the resource every downstream estimate counts. Maximizing fidelity
+    instead produced the perverse result that searching a *deeper* table returned
+    a *more expensive* word — ry(1.1) cost 23 T at depth 26 and 27 T at depth 28
+    for the same 2.3e-4 error — and made the answer depend on exactly which depth
+    the escalation happened to stop at. That in turn made T-counts vary across
+    platforms, because the table is built with float rounding at its dedup
+    boundary and a different Python can land on a different escalation step.
+
+    Among words meeting ``precision``, fewest T gates wins, then shortest. If
+    nothing meets it, the most accurate candidate is returned so the caller can
+    escalate to a deeper table.
+    """
     items, index = _table(depth)
-    target = _rz_matrix(theta)
+    best_key: tuple[int, int] | None = None
+    best_ok: tuple[float, str] | None = None
     best_fidelity, best_word = -1.0, ""
+    threshold = 1.0 - precision
+
     for word_u, mat_u in items:
         if len(word_u) > left_max:
             continue
@@ -210,12 +233,35 @@ def _search(theta: float, depth: int, left_max: int) -> tuple[float, str]:
         for word_v, mat_v in index.near(need):
             f = fidelity(_mul(mat_v, mat_u), target)
             word = word_u + word_v
-            if f > best_fidelity or (f == best_fidelity and len(word) < len(best_word)):
+            if f >= threshold:
+                key = (word.count("t"), len(word))
+                if best_key is None or key < best_key:
+                    best_key, best_ok = key, (f, word)
+            elif best_key is None and (
+                f > best_fidelity or (f == best_fidelity and len(word) < len(best_word))
+            ):
                 best_fidelity, best_word = f, word
+
+    if best_ok is not None:
+        return best_ok
     return best_fidelity, best_word
 
 
-_CACHE: dict[tuple[float, float], SynthesisResult] = {}
+_CACHE: dict[tuple[str, float, float], SynthesisResult] = {}
+
+
+def _escalating_search(target: _Mat, precision: float) -> SynthesisResult:
+    """Search at increasing depth until ``precision`` is met or the table runs out."""
+    best: SynthesisResult | None = None
+    for achievable, depth, left_max in _DEPTH_FOR_PRECISION:
+        f, word = _search(target, depth, left_max, precision)
+        best = SynthesisResult(gates=tuple(word), error=1.0 - f, exact=False)
+        if best.error <= precision:
+            break
+        if achievable > precision:
+            continue          # this depth was never going to be enough — go deeper
+    assert best is not None
+    return best
 
 
 def synthesize_rz(theta: float, precision: float = DEFAULT_PRECISION) -> SynthesisResult:
@@ -241,20 +287,42 @@ def synthesize_rz(theta: float, precision: float = DEFAULT_PRECISION) -> Synthes
             exact=t_error < 1e-12,
         )
 
-    cache_key = (theta, precision)
+    cache_key = ("z", theta, precision)
     hit = _CACHE.get(cache_key)
     if hit is not None:
         return hit
 
-    best: SynthesisResult | None = None
-    for achievable, depth, left_max in _DEPTH_FOR_PRECISION:
-        f, word = _search(theta, depth, left_max)
-        best = SynthesisResult(gates=tuple(word), error=1.0 - f, exact=False)
-        if best.error <= precision:
-            break
-        if achievable > precision:
-            continue          # this depth was never going to be enough — go deeper
+    best = _escalating_search(_rz_matrix(theta), precision)
+    _CACHE[cache_key] = best
+    return best
 
-    assert best is not None
+
+def synthesize_ry(theta: float, precision: float = DEFAULT_PRECISION) -> SynthesisResult:
+    """Approximate ``Ry(theta)`` by a Clifford+T (H/T) word — searched *directly*.
+
+    The obvious route is the Euler identity ``Ry(θ) = Rz(-π/2)·Rx(θ)·Rz(π/2)``,
+    reusing the Z synthesis. It is exact, and it costs eight T gates more than it
+    should: the basis here is ``(h, cx, t)`` with no native ``S``, so those two
+    *Clifford* quarter-turns are spelled ``T⁶`` and ``T²`` and are counted as
+    magic-state consumers by every downstream estimate.
+
+    Searching for Ry directly against the same table avoids paying for Clifford
+    conjugation at all, and lands at the same T-count as an equivalent Z
+    rotation. ``Rx`` needs no equivalent: ``Rx(θ) = H·Rz(θ)·H`` and ``H`` is
+    native, so the conjugation there is genuinely free.
+    """
+    theta = math.remainder(theta, 4 * math.pi)   # Ry has period 4π (Ry(2π) = -I)
+
+    if abs(theta) < 1e-12:
+        return SynthesisResult(gates=(), error=0.0, exact=True)
+
+    cache_key = ("y", theta, precision)
+    hit = _CACHE.get(cache_key)
+    if hit is not None:
+        return hit
+
+    best = _escalating_search(_ry_matrix(theta), precision)
+    if best.error < 1e-12:
+        best = SynthesisResult(gates=best.gates, error=0.0, exact=True)
     _CACHE[cache_key] = best
     return best
