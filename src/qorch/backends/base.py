@@ -61,15 +61,72 @@ class DeviceCalibration:
 
 @dataclass(frozen=True)
 class JobResult:
-    """Measurement histogram plus provenance.
+    """Measurement histogram plus provenance, and what can be derived from it.
 
     ``counts`` maps result bitstrings (leftmost char = qubit 0) to occurrence counts.
+
+    The optional fields exist because a histogram alone loses information a
+    caller often needs and cannot reconstruct:
+
+    - ``memory`` — per-shot outcomes in order. Counts discard shot ordering, so
+      anything looking for drift or time correlation cannot work from them.
+    - ``quasi_probabilities`` — what readout mitigation produces. These are not
+      counts: they can be negative, which is the whole point, so they cannot be
+      squeezed back into an integer histogram without discarding the correction.
+    - ``final_layout`` — which physical wire held each logical qubit. Without it
+      results cannot be tied to per-qubit calibration.
+    - ``expectation_values`` — precomputed observables, when a backend produced
+      them directly rather than by sampling.
+
+    Every one defaults to ``None``, so a backend that only returns counts is
+    still a complete implementation.
     """
 
     counts: dict[str, int]
     shots: int
     backend_name: str
     metadata: dict[str, object] = field(default_factory=dict)
+    memory: tuple[str, ...] | None = None
+    quasi_probabilities: dict[str, float] | None = None
+    expectation_values: dict[str, float] | None = None
+    final_layout: tuple[int, ...] | None = None
+
+    @property
+    def probabilities(self) -> dict[str, float]:
+        """Counts normalized to a distribution, or the quasi-probabilities.
+
+        Prefers ``quasi_probabilities`` when present: if mitigation has run, its
+        corrected distribution is the better answer and returning the raw counts
+        would silently discard the correction.
+        """
+        if self.quasi_probabilities is not None:
+            return dict(self.quasi_probabilities)
+        if self.shots <= 0:
+            return {}
+        return {key: value / self.shots for key, value in self.counts.items()}
+
+    def expectation_z(self, qubit: int) -> float:
+        """⟨Z⟩ on one qubit: P(0) - P(1)."""
+        return self.parity_expectation((qubit,))
+
+    def parity_expectation(self, qubits: tuple[int, ...]) -> float:
+        """⟨Z⊗Z⊗…⟩ over ``qubits`` — the parity of the selected bits.
+
+        Computed from ``probabilities``, so it follows mitigation when mitigation
+        has been applied.
+        """
+        if not qubits:
+            raise ValueError("parity_expectation needs at least one qubit")
+        total = 0.0
+        for bits, weight in self.probabilities.items():
+            for q in qubits:
+                if q >= len(bits):
+                    raise ValueError(
+                        f"qubit {q} is outside the {len(bits)}-bit result strings"
+                    )
+            ones = sum(1 for q in qubits if bits[q] == "1")
+            total += weight * (1 if ones % 2 == 0 else -1)
+        return total
 
 
 class Backend(ABC):
