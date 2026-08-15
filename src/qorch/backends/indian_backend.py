@@ -9,8 +9,6 @@ Characteristics modeled on published specs from:
 
 from __future__ import annotations
 
-import cmath
-import math
 import random
 from dataclasses import dataclass
 
@@ -22,6 +20,7 @@ from qorch.backends.base import (
     QubitCalibration,
 )
 from qorch.backends.simulator import _xx_matrix
+from qorch.gates import gate_matrix
 from qorch.ir import Circuit, bound_params
 from qorch.transpiler import IndianGateSet, decompose, route, CouplingMap
 from qorch.transpiler.gateset import (
@@ -44,7 +43,18 @@ class IndianQPUConfig:
     readout_fidelity: float = 0.95     # per-qubit readout fidelity
     t1_us: float = 50.0                # T1 relaxation time (μs)
     t2_us: float = 30.0                # T2 dephasing time (μs)
-    gate_time_us: float = 0.5          # avg gate duration (μs)
+    gate_time_us: float = 0.5          # single-qubit gate duration (μs)
+    # Two-qubit gates are not single-qubit gates. On every real platform the
+    # entangler is both slower and less reliable — on an ion trap the MS gate
+    # runs 10-20x longer than a single-qubit rotation — and collapsing the two
+    # into one number understates the cost of exactly the operation that
+    # dominates it. Defaults here are conservative multiples of the 1q figures.
+    two_qubit_gate_time_us: float = 3.0
+    two_qubit_fidelity: float = 0.97
+
+
+# Gates that are two-qubit operations, for per-gate timing.
+_TWO_QUBIT_GATES = frozenset({"cx", "ms", "swap"})
 
 
 # Pre-built Indian QPU configs
@@ -58,7 +68,9 @@ INDIAN_QPU_CONFIGS: dict[str, IndianQPUConfig] = {
         readout_fidelity=0.93,
         t1_us=100.0,
         t2_us=80.0,
-        gate_time_us=10.0,  # ion trap gates are slower
+        gate_time_us=10.0,          # ion-trap single-qubit rotations are slow
+        two_qubit_gate_time_us=200.0,  # the MS entangler is far slower again
+        two_qubit_fidelity=0.96,
     ),
     "tifr-superconducting": IndianQPUConfig(
         name="TIFR Superconducting",
@@ -70,6 +82,8 @@ INDIAN_QPU_CONFIGS: dict[str, IndianQPUConfig] = {
         t1_us=50.0,
         t2_us=30.0,
         gate_time_us=0.5,
+        two_qubit_gate_time_us=0.3,   # CX is the slow gate on a transmon
+        two_qubit_fidelity=0.98,
     ),
     "drdo-mirai": IndianQPUConfig(
         name="DRDO MIRAI",
@@ -81,34 +95,20 @@ INDIAN_QPU_CONFIGS: dict[str, IndianQPUConfig] = {
         t1_us=60.0,
         t2_us=40.0,
         gate_time_us=0.4,
+        two_qubit_gate_time_us=0.25,
+        two_qubit_fidelity=0.982,
     ),
 }
 
 
 def _indian_gate_matrix(name: str, params: tuple[float, ...]) -> tuple[complex, complex, complex, complex]:
-    """Return 2x2 matrix (row-major) for a native Indian QPU gate."""
-    if name == "x":
-        return (0, 1, 1, 0)
-    if name == "sx":
-        return (0.5 + 0.5j, 0.5 - 0.5j, 0.5 - 0.5j, 0.5 + 0.5j)
-    if name == "rz":
-        theta = params[0] if params else 0.0
-        return (cmath.exp(-1j * theta / 2), 0, 0, cmath.exp(1j * theta / 2))
-    if name == "rx":
-        theta = params[0] if params else 0.0
-        c = math.cos(theta / 2)
-        s = -1j * math.sin(theta / 2)
-        return (c, s, s, c)
-    if name == "ry":
-        theta = params[0] if params else 0.0
-        c = math.cos(theta / 2)
-        s = math.sin(theta / 2)
-        return (c, -s, s, c)
-    if name == "h":
-        inv = 1.0 / math.sqrt(2)
-        return (inv, inv, inv, -inv)
-    # default identity
-    return (1, 0, 0, 1)
+    """Return 2x2 matrix (row-major) for a native Indian QPU gate.
+
+    Delegates to the gate registry rather than keeping a private copy. A second
+    table of gate matrices is a second thing to drift, which is how the ``sx``
+    self-inverse bug happened.
+    """
+    return gate_matrix(name, params)
 
 
 class IndianQPU(Backend):
@@ -168,13 +168,18 @@ class IndianQPU(Backend):
             )
             for _ in range(c.num_qubits)
         )
-        two_q_err = {edge: single_err for edge in c.coupling_map.edges}
+        two_q_err_value = max(0.0, 1.0 - c.two_qubit_fidelity)
+        two_q_err = {edge: two_q_err_value for edge in c.coupling_map.edges}
         return DeviceCalibration(
             qubits=qubits,
             two_qubit_error=two_q_err,
             coupling_map=c.coupling_map.edges,
             basis_gates=c.gate_set.basis_gates,
-            gate_durations_us={g: c.gate_time_us for g in c.gate_set.basis_gates},
+            gate_durations_us={
+                g: (c.two_qubit_gate_time_us if _TWO_QUBIT_GATES & {g}
+                    else c.gate_time_us)
+                for g in c.gate_set.basis_gates
+            },
         )
 
     def coupling_map(self) -> tuple[tuple[int, int], ...] | None:
