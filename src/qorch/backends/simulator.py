@@ -8,47 +8,32 @@ us demonstrate the error-mitigation payoff without real hardware.
 
 from __future__ import annotations
 
-import cmath
 import math
 import random
 from dataclasses import dataclass
 
 from qorch.backends.base import Backend, BackendProperties, JobResult
+from qorch.gates import GATES, gate_matrix
 from qorch.ir import Circuit, Measure, Reset, bound_params
 
 _INV_SQRT2 = 1.0 / math.sqrt(2.0)
 
-# Single-qubit gate matrices as 2x2 row-major tuples of complex amplitudes.
-# Parametric gates (rx, ry, rz, ms) are computed at runtime via _gate_matrix().
+# Constant single-qubit matrices, taken from the registry so the simulator has
+# no private copy to drift from (see qorch.gates).
 _GATES_1Q: dict[str, tuple[complex, complex, complex, complex]] = {
-    "h": (_INV_SQRT2, _INV_SQRT2, _INV_SQRT2, -_INV_SQRT2),
-    "x": (0, 1, 1, 0),
-    "y": (0, -1j, 1j, 0),
-    "z": (1, 0, 0, -1),
-    "sx": (0.5 + 0.5j, 0.5 - 0.5j, 0.5 - 0.5j, 0.5 + 0.5j),
-    "id": (1, 0, 0, 1),
-    "t": (1, 0, 0, cmath.exp(1j * math.pi / 4)),  # T = diag(1, e^{iπ/4})
+    name: g.matrix(())
+    for name, g in GATES.items()
+    if g.arity == 1 and g.num_params == 0 and g.matrix is not None
 }
 
 
 def _gate_matrix(name: str, params: tuple[float, ...] = ()) -> tuple[complex, complex, complex, complex]:
-    """Return 2x2 matrix (row-major) for any supported gate."""
-    if name in _GATES_1Q:
-        return _GATES_1Q[name]
-    if name == "rx":
-        theta = params[0] if params else 0.0
-        c = math.cos(theta / 2)
-        s = -1j * math.sin(theta / 2)
-        return (c, s, s, c)
-    if name == "ry":
-        theta = params[0] if params else 0.0
-        c = math.cos(theta / 2)
-        s = math.sin(theta / 2)
-        return (c, -s, s, c)
-    if name == "rz":
-        theta = params[0] if params else 0.0
-        return (cmath.exp(-1j * theta / 2), 0, 0, cmath.exp(1j * theta / 2))
-    raise ValueError(f"unknown gate: {name!r}")
+    """Return 2x2 matrix (row-major) for any supported gate.
+
+    Delegates to the gate registry so the simulator and the compiler cannot
+    disagree about what a gate *is* — see :mod:`qorch.gates`.
+    """
+    return gate_matrix(name, params)
 
 
 def _xx_matrix(theta: float) -> tuple[complex, ...]:
