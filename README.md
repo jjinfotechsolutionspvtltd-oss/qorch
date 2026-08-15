@@ -8,7 +8,7 @@
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
 
 ```bash
-pip install -e ".[dev]" && python -m pytest      # 874 tests, ~40s, no services required
+pip install -e ".[dev]" && python -m pytest      # 902 tests, ~40s, no services required
 ```
 
 ```python
@@ -25,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 874 tests, mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 902 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -426,13 +426,13 @@ src/qorch/
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 874 unit tests (~95% coverage)
+tests/                   # 902 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 874 tests
+python -m pytest                 # 902 tests
 python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check
