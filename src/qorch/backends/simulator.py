@@ -358,13 +358,75 @@ class LocalSimulator(Backend):
                 self._last_memory.append(key)
         return counts
 
+    def _draw_error_pattern(
+        self, circuit: Circuit
+    ) -> list[tuple[int, int, str]]:
+        """Sample which depolarizing errors fire, as (gate index, qubit, pauli).
+
+        Drawn in exactly the order ``_evolve_trajectory`` used to draw them —
+        per gate, per qubit, ``random()`` then ``choice()`` only if it fires — so
+        the random stream is unchanged and a seeded run reproduces bit for bit.
+        Evolution itself consumes no randomness, which is what makes separating
+        the two safe.
+        """
+        p = self._gate_noise.depolarizing_prob
+        pattern: list[tuple[int, int, str]] = []
+        for index, gate in enumerate(circuit.gates):
+            for q in gate.qubits:
+                if self._rng.random() < p:
+                    pattern.append((index, q, self._rng.choice(("x", "y", "z"))))
+        return pattern
+
+    def _evolve_with_errors(
+        self, circuit: Circuit, pattern: list[tuple[int, int, str]]
+    ) -> list[complex]:
+        """Evolve applying a pre-drawn set of Pauli errors."""
+        n = circuit.num_qubits
+        state = [0j] * (1 << n)
+        state[0] = 1 + 0j
+        by_index: dict[int, list[tuple[int, str]]] = {}
+        for index, qubit, pauli in pattern:
+            by_index.setdefault(index, []).append((qubit, pauli))
+
+        for index, gate in enumerate(circuit.gates):
+            if gate.name == "cx":
+                self._apply_cx(state, n, gate.qubits[0], gate.qubits[1])
+            elif gate.name == "swap":
+                self._apply_swap(state, n, gate.qubits[0], gate.qubits[1])
+            elif gate.name == "ms":
+                theta = float(gate.params[0]) if gate.params else 0.0
+                self._apply_2q(state, n, _xx_matrix(theta), gate.qubits[0], gate.qubits[1])
+            else:
+                m = _gate_matrix(gate.name, bound_params(gate.params))
+                self._apply_1q(state, n, m, gate.qubits[0])
+            for qubit, pauli in by_index.get(index, ()):
+                self._apply_1q(state, n, _PAULIS[pauli], qubit)
+        return state
+
     def _sample_trajectories(self, circuit: Circuit, shots: int) -> dict[str, int]:
-        """Monte Carlo: one independent noisy trajectory per shot, then one measurement each."""
+        """Monte Carlo: one independent noisy trajectory per shot.
+
+        A trajectory in which no error fired *is* the noiseless state, so it does
+        not need re-deriving. At realistic error rates most trajectories are
+        error-free — that is what a low error rate means — and the old code
+        re-evolved every one of them, making p=0.001 cost exactly as much as
+        p=0.01. The ideal state is now computed at most once and reused.
+
+        This is an exact optimization, not an approximation: the errors sampled
+        and the random stream consumed are identical to before.
+        """
         n = circuit.num_qubits
         readout = circuit.readout_qubits
         counts: dict[str, int] = {}
+        ideal: list[complex] | None = None
         for _ in range(shots):
-            amps = self._evolve_trajectory(circuit)
+            pattern = self._draw_error_pattern(circuit)
+            if pattern:
+                amps = self._evolve_with_errors(circuit, pattern)
+            else:
+                if ideal is None:
+                    ideal = self._evolve(circuit)
+                amps = ideal
             probs = [abs(a) ** 2 for a in amps]
             idx = self._rng.choices(range(len(probs)), weights=probs, k=1)[0]
             bits = [self._bit(idx, n, q) for q in readout]
