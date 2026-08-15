@@ -35,7 +35,7 @@ def _circuit() -> Circuit:
 
 def test_pipeline_order_is_inspectable() -> None:
     names = [n for n, _ in build_pass_manager(TIFR_SUPERCONDUCTING, _LINE_5).passes]
-    assert names == ["decompose", "route", "lower", "optimize"]
+    assert names == ["decompose", "route", "fuse", "lower", "optimize"]
 
 
 def test_lookahead_selects_a_different_router_pass() -> None:
@@ -82,7 +82,9 @@ def test_ordering_constraints_hold() -> None:
 def test_metrics_record_every_pass() -> None:
     result = transpile_with_layout(_circuit(), TIFR_SUPERCONDUCTING, coupling_map=_LINE_5)
     assert isinstance(result.metrics, TranspileMetrics)
-    assert [p.name for p in result.metrics.passes] == ["decompose", "route", "lower", "optimize"]
+    assert [p.name for p in result.metrics.passes] == [
+        "decompose", "route", "fuse", "lower", "optimize"
+    ]
 
 
 def test_metrics_gate_counts_match_the_real_circuit() -> None:
