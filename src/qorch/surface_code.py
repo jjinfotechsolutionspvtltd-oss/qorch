@@ -107,32 +107,70 @@ class ToricCode:
         return corr
 
     def _dp_match(self, defects: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        """Exact minimum-weight perfect matching via bitmask DP over defects."""
-        k = len(defects)
-        dist = [[self.plaq_distance(defects[i], defects[j]) for j in range(k)]
-                for i in range(k)]
-        memo: dict[int, tuple[float, list[tuple[int, int]]]] = {}
+        """Exact minimum-weight perfect matching via bitmask DP over defects.
 
-        def solve(mask: int) -> tuple[float, list[tuple[int, int]]]:
-            if mask == 0:
-                return 0.0, []
-            if mask in memo:
-                return memo[mask]
+        Explored top-down. That matters more than it looks: because each step
+        always pairs off the *lowest* remaining defect, only a small fraction of
+        the 2^k masks is ever reachable — on the order of 700 rather than 32768
+        at k=15. A bottom-up sweep over every mask is the obvious-looking
+        rewrite and is dramatically slower for exactly that reason.
+
+        What the recursion should not do is rebuild the pair list at every node.
+        Memoizing cost and partner separately, then reconstructing the matching
+        once at the end, removes an O(k) list allocation per subproblem.
+
+        Tie-breaking is unchanged (first minimum wins, scanning j ascending), so
+        decoded corrections are identical and Monte-Carlo results reproducible.
+        """
+        k = len(defects)
+        if k == 0:
+            return []
+
+        # Flat distance table: one index instead of a method call per probe.
+        dist = [0] * (k * k)
+        for i in range(k):
+            for j in range(i + 1, k):
+                d = self.plaq_distance(defects[i], defects[j])
+                dist[i * k + j] = d
+                dist[j * k + i] = d
+
+        cost_memo: dict[int, float] = {0: 0.0}
+        partner: dict[int, int] = {}
+
+        def solve(mask: int) -> float:
+            cached = cost_memo.get(mask)
+            if cached is not None:
+                return cached
             i = (mask & -mask).bit_length() - 1
             rest = mask & ~(1 << i)
-            best: tuple[float, list[tuple[int, int]]] = (float("inf"), [])
+            row = i * k
+            best = float("inf")
+            best_j = -1
             jj = rest
             while jj:
                 j = (jj & -jj).bit_length() - 1
-                sub_cost, sub_pairs = solve(rest & ~(1 << j))
-                cost = dist[i][j] + sub_cost
-                if cost < best[0]:
-                    best = (cost, sub_pairs + [(i, j)])
+                c = dist[row + j] + solve(rest & ~(1 << j))
+                if c < best:                   # strict: first minimum wins
+                    best = c
+                    best_j = j
                 jj &= jj - 1
-            memo[mask] = best
+            cost_memo[mask] = best
+            partner[mask] = best_j
             return best
 
-        return solve((1 << k) - 1)[1]
+        full = (1 << k) - 1
+        solve(full)
+
+        pairs: list[tuple[int, int]] = []
+        mask = full
+        while mask:
+            i = (mask & -mask).bit_length() - 1
+            j = partner.get(mask, -1)
+            if j < 0:                          # odd defect count: nothing to pair
+                break
+            pairs.append((i, j))
+            mask &= ~((1 << i) | (1 << j))
+        return pairs
 
     def _greedy_match(self, defects: list[tuple[int, int]]) -> list[tuple[int, int]]:
         """Greedy nearest-neighbour matching (fallback for many defects)."""

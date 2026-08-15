@@ -137,26 +137,52 @@ class Circuit:
     num_clbits: int = 0
 
     # --- validation -------------------------------------------------------
+    def _validate_op(self, op: "Operation") -> None:
+        """Check a single operation against this circuit's qubit/clbit widths."""
+        if isinstance(op, Gate) and op.name not in SUPPORTED_GATES:
+            raise ValueError(f"unsupported gate: {op.name!r}")
+        for q in op.qubits:
+            if not 0 <= q < self.num_qubits:
+                raise ValueError(f"qubit {q} out of range for {self.num_qubits} qubits")
+        if isinstance(op, Measure) and not 0 <= op.cbit < self.num_clbits:
+            raise ValueError(f"measure target clbit {op.cbit} out of range")
+        if op.condition is not None:
+            for cbit, _value in op.condition:
+                if not 0 <= cbit < self.num_clbits:
+                    raise ValueError(f"condition clbit {cbit} out of range")
+
     def __post_init__(self) -> None:
         if self.num_qubits <= 0:
             raise ValueError("num_qubits must be positive")
         if self.num_clbits < 0:
             raise ValueError("num_clbits must be non-negative")
         for op in self.gates:
-            if isinstance(op, Gate) and op.name not in SUPPORTED_GATES:
-                raise ValueError(f"unsupported gate: {op.name!r}")
-            for q in op.qubits:
-                if not 0 <= q < self.num_qubits:
-                    raise ValueError(f"qubit {q} out of range for {self.num_qubits} qubits")
-            if isinstance(op, Measure) and not 0 <= op.cbit < self.num_clbits:
-                raise ValueError(f"measure target clbit {op.cbit} out of range")
-            if op.condition is not None:
-                for cbit, _value in op.condition:
-                    if not 0 <= cbit < self.num_clbits:
-                        raise ValueError(f"condition clbit {cbit} out of range")
+            self._validate_op(op)
         for q in self.measured:
             if not 0 <= q < self.num_qubits:
                 raise ValueError(f"measured qubit {q} out of range")
+
+    def _appending(self, op: "Operation") -> "Circuit":
+        """This circuit plus ``op``, validating only ``op``.
+
+        Every construction normally revalidates the whole gate list, which makes
+        building an n-gate circuit O(n²) — the builder methods were the single
+        largest cost in QEC threshold estimation, above the stabilizer simulator
+        itself. Since ``self`` was validated when it was built and the operations
+        are immutable, re-checking them cannot discover anything new; only ``op``
+        is genuinely unchecked.
+
+        The full check in ``__post_init__`` still guards every circuit built
+        directly, deserialized, or produced by ``dataclasses.replace`` — this is
+        strictly a fast path for growing an already-valid circuit by one.
+        """
+        self._validate_op(op)
+        new = object.__new__(Circuit)
+        object.__setattr__(new, "num_qubits", self.num_qubits)
+        object.__setattr__(new, "gates", self.gates + (op,))
+        object.__setattr__(new, "measured", self.measured)
+        object.__setattr__(new, "num_clbits", self.num_clbits)
+        return new
 
     @property
     def readout_qubits(self) -> tuple[int, ...]:
@@ -179,7 +205,7 @@ class Circuit:
 
     # --- immutable builders ----------------------------------------------
     def _add(self, name: str, *qubits: int, params: tuple[ParamValue, ...] = ()) -> "Circuit":
-        return replace(self, gates=self.gates + (Gate(name, qubits, params),))
+        return self._appending(Gate(name, qubits, params))
 
     def h(self, q: int) -> "Circuit":
         return self._add("h", q)
@@ -225,7 +251,7 @@ class Circuit:
 
     # --- dynamic-circuit builders ----------------------------------------
     def _add_op(self, op: Operation) -> "Circuit":
-        return replace(self, gates=self.gates + (op,))
+        return self._appending(op)
 
     def measure_into(self, qubit: int, cbit: int) -> "Circuit":
         """Mid-circuit measurement of ``qubit`` into classical bit ``cbit``."""
