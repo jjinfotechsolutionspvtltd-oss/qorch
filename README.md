@@ -8,7 +8,7 @@
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
 
 ```bash
-pip install -e ".[dev]" && python -m pytest      # 439 tests, ~40s, no services required
+pip install -e ".[dev]" && python -m pytest      # 547 tests, ~40s, no services required
 ```
 
 ```python
@@ -25,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 439 tests, mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 547 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -136,7 +136,7 @@ Every stage is **dynamic-circuit aware**: mid-circuit measurement and reset foll
 ```python
 from qorch.transpiler import transpile, TIFR_SUPERCONDUCTING, CouplingMap
 
-c = Circuit(3).h(0).cx(0, 2).rz(1, 0.5)          # cx(0,2) is not adjacent → routing inserts SWAPs
+c = Circuit(3).h(0).cx(0, 2).rx(1, 0.5)          # cx(0,2) is not adjacent → routing inserts SWAPs
 cmap = CouplingMap(edges=((0, 1), (1, 0), (1, 2), (2, 1)))
 result = transpile(c, target=TIFR_SUPERCONDUCTING, coupling_map=cmap, use_lookahead=True)
 
@@ -146,7 +146,7 @@ result = transpile(c, target=TIFR_SUPERCONDUCTING, coupling_map=cmap, use_lookah
 protected = transpile(c, TIFR_SUPERCONDUCTING, coupling_map=cmap, dd_sequence="hahn")
 ```
 
-Targets: `IIT_JODHPUR_ION_TRAP`, `TIFR_SUPERCONDUCTING`, `DRDO_MIRAI`, `CLIFFORD_T`.
+Targets: `IIT_JODHPUR_ION_TRAP`, `TIFR_SUPERCONDUCTING`, `DRDO_MIRAI`, `CLIFFORD_T`. **Every supported gate lowers to every target** — including across architectures, so an `ms`-based ion-trap circuit compiles to a CX machine and vice versa. This is enforced exhaustively: each of the 13 gates × 4 gate sets is checked to emit only native gates *and* to preserve the unitary up to global phase.
 
 ### 6. SabreSWAP lookahead routing
 
@@ -408,13 +408,13 @@ src/qorch/
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 439 unit tests (~95% coverage)
+tests/                   # 547 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 439 tests
+python -m pytest                 # 547 tests
 python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check
