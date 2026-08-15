@@ -20,6 +20,7 @@ from qorch.transpiler.routing import (
     route_with_layout,
 )
 
+from qorch.transpiler.fusion import cancel_commuting, fuse_single_qubit_runs
 from qorch.transpiler.layout import (
     LAYOUT_METHODS,
     apply_layout,
@@ -98,6 +99,7 @@ def transpile(
     lookahead: int = 20,
     decay: float = 0.5,
     layout_method: str = "trivial",
+    do_fusion: bool = True,
 ) -> Circuit:
     """Full transpile pipeline: decompose → route → lower → optimize → DD.
 
@@ -129,7 +131,7 @@ def transpile(
     """
     return transpile_with_layout(
         circuit, target, coupling_map, qubit_quality, dd_sequence,
-        do_optimize, use_lookahead, lookahead, decay, layout_method,
+        do_optimize, use_lookahead, lookahead, decay, layout_method, do_fusion,
     ).circuit
 
 
@@ -144,6 +146,7 @@ def transpile_with_layout(
     lookahead: int = 20,
     decay: float = 0.5,
     layout_method: str = "trivial",
+    do_fusion: bool = True,
 ) -> TranspileResult:
     """:func:`transpile`, additionally reporting the final logical→physical layout.
 
@@ -156,7 +159,7 @@ def transpile_with_layout(
     """
     manager = build_pass_manager(
         target, coupling_map, qubit_quality, dd_sequence,
-        do_optimize, use_lookahead, lookahead, decay, layout_method,
+        do_optimize, use_lookahead, lookahead, decay, layout_method, do_fusion,
     )
     routed, state, metrics = manager.run(circuit)
     return TranspileResult(
@@ -174,6 +177,7 @@ def build_pass_manager(
     lookahead: int = 20,
     decay: float = 0.5,
     layout_method: str = "trivial",
+    do_fusion: bool = True,
 ) -> PassManager:
     """Assemble the pipeline :func:`transpile` runs, as an inspectable value.
 
@@ -216,6 +220,26 @@ def build_pass_manager(
                 return r.circuit, r.final_layout
             passes.append(("route", with_layout(_route_greedy)))
 
+    if do_fusion:
+        # Before `lower`, never after: fusion emits rz/ry, which are not native
+        # to every target, so running it last would reintroduce exactly the
+        # non-native-gate bug that `lower` exists to prevent.
+        #
+        # And the rewrite is kept only if it survives lowering. Collapsing a run
+        # into Rz-Ry-Rz is fewer gates *as written*, but a target with no native
+        # ry — TIFR is cx/sx/rz/x — expands that ry into more gates than fusion
+        # saved. Measured pre-lowering, fusion always looks like a win; measured
+        # on what actually runs, it is sometimes a loss. This compares the thing
+        # that matters.
+        def _fuse(c: Circuit) -> Circuit:
+            fused = cancel_commuting(fuse_single_qubit_runs(c))
+            if fused is c:
+                return c
+            after = len(_lower_to_target(fused, target, coupling_map).gates)
+            before = len(_lower_to_target(c, target, coupling_map).gates)
+            return fused if after <= before else c
+        passes.append(("fuse", circuit_pass(_fuse)))
+
     passes.append(
         ("lower", circuit_pass(lambda c: _lower_to_target(c, target, coupling_map)))
     )
@@ -256,6 +280,8 @@ __all__ = [
     "interaction_graph",
     "LAYOUT_METHODS",
     "layout_pass",
+    "fuse_single_qubit_runs",
+    "cancel_commuting",
     "PassManager",
     "PassMetrics",
     "PassState",
