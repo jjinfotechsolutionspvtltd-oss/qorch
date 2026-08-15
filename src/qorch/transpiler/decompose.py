@@ -6,7 +6,7 @@ import math
 from dataclasses import replace
 from typing import Callable
 
-from qorch.ir import Circuit, Gate, SUPPORTED_GATES, static_gates
+from qorch.ir import Circuit, Gate, Operation, SUPPORTED_GATES
 from qorch.transpiler.gateset import IndianGateSet
 
 # A decomposition rule takes (qubits, params) and returns a list of native Gates.
@@ -239,7 +239,9 @@ def decompose_to_clifford_t(circuit: Circuit) -> tuple[Circuit, int, int]:
     """
     from qorch.transpiler.gateset import CLIFFORD_T
     result = decompose(circuit, CLIFFORD_T)
-    gates = static_gates(result.gates)
+    # T-count/depth are properties of the unitary ops; measurement, reset, and
+    # the classical control flow around them contribute no T gates.
+    gates = tuple(op for op in result.gates if isinstance(op, Gate))
     tc = _count_t(gates)
     td = _t_depth(gates, result.num_qubits)
     return result, tc, td
@@ -329,11 +331,13 @@ def _find_rule(gate_name: str, native_set: frozenset[str]) -> DecompRule | None:
 def _can_decompose(circuit: Circuit, target: IndianGateSet) -> bool:
     """Check if every gate in the circuit can be decomposed to the target."""
     native = frozenset(target.basis_gates)
-    for g in circuit.gates:
-        if g.name not in SUPPORTED_GATES:
+    for op in circuit.gates:
+        if not isinstance(op, Gate):
+            continue          # measure/reset are primitives, never decomposed
+        if op.name not in SUPPORTED_GATES:
             return False
-        rule = _find_rule(g.name, native)
-        if rule is None and g.name not in native:
+        rule = _find_rule(op.name, native)
+        if rule is None and op.name not in native:
             return False
     return True
 
@@ -343,13 +347,22 @@ def decompose(circuit: Circuit, target: IndianGateSet, _depth: int = 0) -> Circu
 
     Recursively decomposes until all gates are native or max depth is reached.
     Returns a new ``Circuit`` whose gates are all native to the target.
+
+    Dynamic circuits are supported: ``Measure`` and ``Reset`` are hardware
+    primitives and pass through untouched, and a classically-conditioned gate
+    decomposes into a sequence carrying that same condition on every element.
+    That is exact — the condition reads classical bits no member of the
+    expansion can write, so the block still executes all-or-nothing.
     """
     if _depth > 20:
         raise ValueError(f"decomposition did not converge for target {target.basis_gates}")
     native = frozenset(target.basis_gates)
-    new_gates: list[Gate] = []
+    new_gates: list[Operation] = []
     any_non_native = False
-    for g in static_gates(circuit.gates):
+    for g in circuit.gates:
+        if not isinstance(g, Gate):
+            new_gates.append(g)
+            continue
         if g.name in native:
             new_gates.append(g)
             continue
@@ -360,6 +373,8 @@ def decompose(circuit: Circuit, target: IndianGateSet, _depth: int = 0) -> Circu
                 f"no decomposition rule for {g.name!r} -> {target.basis_gates}"
             )
         decomposed = rule(*g.qubits, params=g.params)
+        if g.condition is not None:
+            decomposed = [replace(d, condition=g.condition) for d in decomposed]
         new_gates.extend(decomposed)
     if not any_non_native:
         return replace(circuit, gates=tuple(new_gates))

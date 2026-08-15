@@ -27,6 +27,9 @@ def transpile(
 ) -> Circuit:
     """Full transpile pipeline: decompose → route → DD → optimize.
 
+    Every stage is dynamic-circuit aware, so mid-circuit measurement, reset, and
+    feed-forward survive compilation to a native gate set and topology.
+
     Args:
         circuit: Input circuit (any supported gates).
         target: Native gate set for the target QPU.

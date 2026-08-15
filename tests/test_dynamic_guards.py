@@ -1,4 +1,10 @@
-"""Static-only stages must reject dynamic circuits with a clear error."""
+"""Static-only stages must reject dynamic circuits with a clear error.
+
+The transpiler is *not* on this list any more — decompose/route/optimize handle
+dynamic circuits (see ``test_dynamic_transpile.py``). What remains static-only is
+serialization (QASM3, QMI) and the density-matrix simulator, none of which can
+express mid-circuit measurement or classical control.
+"""
 
 from __future__ import annotations
 
@@ -14,9 +20,6 @@ def _dynamic() -> Circuit:
 
 
 @pytest.mark.parametrize("fn", [
-    lambda c: decompose(c, TIFR_SUPERCONDUCTING),
-    optimize,
-    lambda c: transpile(c, TIFR_SUPERCONDUCTING),
     to_qmi,
     to_qasm3,
     lambda c: DensitySimulator().run(c, shots=8),
@@ -24,6 +27,18 @@ def _dynamic() -> Circuit:
 def test_static_stage_rejects_dynamic_circuit(fn):
     with pytest.raises(ValueError, match="static circuit"):
         fn(_dynamic())
+
+
+@pytest.mark.parametrize("fn", [
+    lambda c: decompose(c, TIFR_SUPERCONDUCTING),
+    optimize,
+    lambda c: transpile(c, TIFR_SUPERCONDUCTING),
+])
+def test_transpiler_stages_accept_dynamic_circuits(fn):
+    """The compiler stages were promoted from 'reject' to 'support'."""
+    out = fn(_dynamic())
+    assert out.is_dynamic
+    assert out.num_clbits == 1
 
 
 def test_static_circuit_still_works_everywhere():

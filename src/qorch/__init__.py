@@ -26,6 +26,15 @@ from qorch.ir import (
     to_qasm3,
 )
 from qorch.mitigation.dd import DD_SEQUENCES, apply_dd_mitigation, insert_dd
+from qorch.pulse import (
+    Waveform,
+    calibrate_gaussian,
+    pulse_unitary,
+    rotation_angle,
+    sx_pulse,
+    x_pulse,
+    y_pulse,
+)
 from qorch.transpiler import transpile
 from qorch.mitigation.pec import PECResult, pec_expectation
 from qorch.mitigation.readout import ReadoutMitigator
@@ -76,6 +85,13 @@ __all__ = [
     "insert_dd",
     "twirl_circuit",
     "transpile",
+    "Waveform",
+    "pulse_unitary",
+    "rotation_angle",
+    "calibrate_gaussian",
+    "x_pulse",
+    "y_pulse",
+    "sx_pulse",
     "Scheduler",
     "first_available",
     "ToricCode",

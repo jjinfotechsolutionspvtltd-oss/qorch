@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jjinfotechsolutionspvtltd-oss/qorch/security/advisories/new
+    about: Report privately — please do not open a public issue for a vulnerability.
+  - name: Question or idea
+    url: https://github.com/jjinfotechsolutionspvtltd-oss/qorch/discussions
+    about: Usage questions, design discussion, and "is this a bug?" go here first.

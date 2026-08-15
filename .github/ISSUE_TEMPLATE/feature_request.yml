@@ -1,0 +1,67 @@
+name: Feature request
+description: Propose a capability, algorithm, backend, or compiler pass
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals here are costed: problem, why it matters, difficulty, benefit. A
+        request that states the tradeoff gets a decision much faster than one that
+        states a wish.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: >
+        Who is blocked, and on what? "Enables X class of experiment" or "this is the
+        standard everyone else implements" are both good answers.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: >
+        Sketch the API or the pass. If there is prior art (a paper, another framework's
+        implementation), link it.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: difficulty
+    attributes:
+      label: Estimated difficulty
+      options:
+        - Low — self-contained, a few hundred lines
+        - Medium — touches several modules or needs new tests infrastructure
+        - High — architectural, or needs a new IR concept
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      description: >
+        The core has zero runtime dependencies and that is non-negotiable. Please
+        confirm how your proposal fits.
+      options:
+        - label: This needs no third-party runtime dependency in the core
+        - label: This needs a dependency, and I propose it as an optional extra with a pure-Python fallback
+        - label: I'm willing to work on this
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else would solve the problem, and why is this better?

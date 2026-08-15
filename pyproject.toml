@@ -8,10 +8,27 @@ version = "0.1.0"
 description = "QS-004 Quantum Orchestration Layer — hardware-agnostic control plane for quantum execution"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "LicenseRef-Proprietary"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "JJISPL Quantum Technologies" }]
+keywords = ["quantum", "quantum-computing", "transpiler", "simulator", "qec", "error-mitigation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
+]
 # The M1 vertical slice is intentionally dependency-free (ADR-6).
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/jjinfotechsolutionspvtltd-oss/qorch"
+Repository = "https://github.com/jjinfotechsolutionspvtltd-oss/qorch"
+Issues = "https://github.com/jjinfotechsolutionspvtltd-oss/qorch/issues"
 
 [project.optional-dependencies]
 # M2+: real-QPU adapters and transpiler reuse layer in.
@@ -37,6 +54,15 @@ source = ["src/qorch"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+# Pin the rule set explicitly instead of inheriting ruff's defaults. CI installs
+# ruff unpinned (`ruff>=0.5`), so a default-set change upstream lands as a red
+# build on an unrelated PR — ruff 0.16 adding isort (I001) flagged 115
+# pre-existing import blocks across the repo, none of them new code. These four
+# are the defaults the codebase was written against; adopting isort is a
+# deliberate repo-wide reformat, not something a dependency bump should force.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.11"

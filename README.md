@@ -1,6 +1,22 @@
 # qorch — Indian Quantum Orchestration Layer
 
+[![CI](https://github.com/jjinfotechsolutionspvtltd-oss/qorch/actions/workflows/ci.yml/badge.svg)](https://github.com/jjinfotechsolutionspvtltd-oss/qorch/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](pyproject.toml)
+
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
+
+```bash
+pip install -e ".[dev]" && python -m pytest      # 409 tests, ~40s, no services required
+```
+
+```python
+from qorch import Circuit, LocalSimulator
+
+bell = Circuit(2).h(0).cx(0, 1).measure(0, 1)
+LocalSimulator(seed=1).run(bell, shots=1000).counts    # {'00': ~500, '11': ~500}
+```
 
 ## Why qorch?
 
@@ -9,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 381 tests (384 with the optional Qiskit extra), mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 409 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -101,6 +117,8 @@ sim = DensitySimulator.from_calibration(cal, seed=0)
 
 **What.** Lower any circuit to a target native gate set, route it for limited connectivity (greedy or SabreSWAP lookahead), and optimize.
 **Why.** Real devices have a fixed gate set and topology. Routing is **semantically transparent** — measurements and single-qubit gates are remapped through the final layout, so results are correct.
+
+Every stage is **dynamic-circuit aware**: mid-circuit measurement and reset follow their qubit through the layout permutation, a conditioned gate decomposes into a sequence carrying that same condition, the lookahead router tracks classical-bit hazards so feed-forward never overtakes the measurement that decides it, and the optimizer refuses to cancel across a measurement or between differently-conditioned gates.
 
 ```python
 from qorch.transpiler import transpile, TIFR_SUPERCONDUCTING, CouplingMap
@@ -251,6 +269,15 @@ c = (Circuit(2, num_clbits=2)
      .h(0).measure_into(0, 0)     # mid-circuit measurement → classical bit 0
      .x_if(1, 0, 1)               # feed-forward: X on qubit 1 if bit 0 == 1
      .measure_into(1, 1))
+
+# Dynamic circuits compile like any other — same classical-register distribution
+from qorch.transpiler import transpile, TIFR_SUPERCONDUCTING, CouplingMap
+from qorch.dynamic import repetition_code_circuit
+
+code = repetition_code_circuit(error_qubit=1)
+native = transpile(code, TIFR_SUPERCONDUCTING,
+                   coupling_map=CouplingMap(TIFR_SUPERCONDUCTING.coupling_map))
+LocalSimulator(seed=7).run(native, shots=200).counts    # {'110': 200} — syndrome 11, logical 0
 ```
 
 ### 16. Quantum error correction
@@ -286,7 +313,26 @@ sched = Scheduler(backends=[sim1, qpu2])
 results = sched.run_batch([BatchJob(circuit=c1, shots=1024, label="bell")])
 ```
 
-### 18. CLI
+### 18. Pulse-level control
+
+**What.** Complex baseband waveforms (constant / Gaussian / DRAG), an exact rotating-frame single-qubit simulator, and calibration helpers that reproduce gates from physical pulses.
+**Why.** The gate IR hides *how* a gate is physically realized; calibration and pulse-aware compilation bottom out here. Closed-form per-slice evolution, so it stays dependency-free.
+
+```python
+from qorch import Waveform, x_pulse, sx_pulse, calibrate_gaussian, pulse_unitary
+
+from qorch.pulse import equals_gate
+
+equals_gate(pulse_unitary(x_pulse()), (0, 1, 1, 0))   # True — the π pulse *is* X
+sx = pulse_unitary(sx_pulse())                        # two of these compose to X
+
+# A θ-area pulse drives |0> to P(1) = sin²(θ/2) — exact Rabi physics
+p1 = abs(pulse_unitary(calibrate_gaussian(1.3))[2]) ** 2   # index 2 = U[1,0]
+
+Waveform.drag(duration=20, amp=1.0, sigma=5.0, beta=0.3)   # leakage-suppressing DRAG
+```
+
+### 19. CLI
 
 ```text
 python -m qorch <command> [options]
@@ -318,6 +364,7 @@ src/qorch/
   ir.py                  # immutable IR (gates, params, dynamic ops) + QASM-3 + JSON
   adp.py                 # algorithm templates: QFT, Grover, QAOA, VQE, QPE
   dynamic.py             # teleportation + repetition code (dynamic circuits)
+  pulse.py               # waveforms + rotating-frame pulse simulator + calibration
   qec.py                 # repetition-d + Steane [[7,1,3]] codes + threshold
   surface_code.py        # toric code geometry + MWPM decoder + 2D threshold
   resource_estimation.py # fault-tolerant resource estimates from T-count
@@ -343,14 +390,14 @@ src/qorch/
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 381 unit tests (~94% coverage)
+tests/                   # 409 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 381 tests
-python -m pytest --cov=qorch     # with coverage (~94%)
+python -m pytest                 # 409 tests
+python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check
 ```
@@ -380,4 +427,25 @@ qorch is a research project focused on **Indian quantum readiness**:
 - Dynamic circuits + a full QEC stack (stabilizer sim, codes, surface-code threshold)
 - QMI binary format for low-latency QPU communication
 - No foreign vendor lock-in — sovereign, dependency-free core
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the five
+rules that govern every change (the dependency-free core is the load-bearing one), and
+what a convincing test looks like in a codebase where bugs return plausible-looking
+wrong answers rather than crashing.
+
+Good places to start: compiler passes (layout, commutation-based cancellation,
+scheduling), QEC decoders, and new backend adapters behind the existing HAL. Issues
+labeled `good first issue` are scoped to be self-contained.
+
+Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). To report a
+vulnerability, see [SECURITY.md](SECURITY.md) — please don't open a public issue.
+
+## License
+
+[Apache License 2.0](LICENSE) — Copyright 2026 JJISPL Quantum Technologies.
+
+Permissive, with an explicit patent grant. Use it commercially, modify it, redistribute
+it; keep the notice and state your changes.
 ```
