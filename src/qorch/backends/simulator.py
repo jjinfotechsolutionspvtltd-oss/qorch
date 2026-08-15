@@ -128,6 +128,7 @@ class LocalSimulator(Backend):
         readout_noise: ReadoutNoise | None = None,
         gate_noise: GateNoise | None = None,
         use_numpy: bool | None = None,
+        memory: bool = False,
     ) -> None:
         """``use_numpy=None`` (the default) picks the faster kernel per circuit.
 
@@ -144,6 +145,7 @@ class LocalSimulator(Backend):
         self._noise = readout_noise or ReadoutNoise()
         self._gate_noise = gate_noise or GateNoise()
         self._use_numpy = use_numpy
+        self._memory = memory
         if use_numpy and not numpy_kernel.is_available():
             raise ValueError("use_numpy=True but numpy is not installed")
 
@@ -164,6 +166,7 @@ class LocalSimulator(Backend):
 
     def run(self, circuit: Circuit, shots: int = 1024) -> JobResult:
         self.validate(circuit)
+        self._last_memory: list[str] = []
         if circuit.is_dynamic:
             counts = self._run_dynamic(circuit, shots)
         elif self._gate_noise.active:
@@ -172,6 +175,7 @@ class LocalSimulator(Backend):
             counts = self._sample(self._evolve(circuit), circuit, shots)
         return JobResult(
             counts=counts,
+            memory=tuple(self._last_memory) if self._memory else None,
             shots=shots,
             backend_name=self.name,
             metadata={
@@ -222,6 +226,8 @@ class LocalSimulator(Backend):
                     self._apply_1q(state, n, m, op.qubits[0])
             key = "".join(str(b) for b in creg)
             counts[key] = counts.get(key, 0) + 1
+            if self._memory:
+                self._last_memory.append(key)
         return counts
 
     def _measure_qubit(self, state: list[complex], n: int, q: int) -> int:
@@ -348,6 +354,8 @@ class LocalSimulator(Backend):
                 bits = [self._apply_readout_noise(b) for b in bits]
             key = "".join(str(int(b)) for b in bits)
             counts[key] = counts.get(key, 0) + 1
+            if self._memory:
+                self._last_memory.append(key)
         return counts
 
     def _sample_trajectories(self, circuit: Circuit, shots: int) -> dict[str, int]:
@@ -364,6 +372,8 @@ class LocalSimulator(Backend):
                 bits = [self._apply_readout_noise(b) for b in bits]
             key = "".join(str(int(b)) for b in bits)
             counts[key] = counts.get(key, 0) + 1
+            if self._memory:
+                self._last_memory.append(key)
         return counts
 
     def _apply_readout_noise(self, bit: int) -> int:
