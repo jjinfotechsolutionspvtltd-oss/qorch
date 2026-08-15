@@ -54,6 +54,26 @@ def _z_to_rz() -> DecompRule:
     return rule
 
 
+def _x_to_rx(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """x → rx(π), since Rx(π) = -i·X (equal up to global phase)."""
+    return [Gate("rx", (qubits[0],), (math.pi,))]
+
+
+def _y_to_rz_x(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """y → rz(π) x, since X·Rz(π) = -Y (equal up to global phase).
+
+    Circuit order is rz first, then x: Y = i·X·Z as a matrix product, and the
+    left-most matrix is the *last* gate applied.
+    """
+    q = qubits[0]
+    return [Gate("rz", (q,), (math.pi,)), Gate("x", (q,))]
+
+
+def _y_to_ry(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """y → ry(π), since Ry(π) = -i·Y (equal up to global phase)."""
+    return [Gate("ry", (qubits[0],), (math.pi,))]
+
+
 def _cx_to_ms_rx() -> DecompRule:
     """cx → ry_c(π/2) · ms(π/4) · rx_c(-π/2) · rx_t(-π/2) · ry_c(-π/2) (MS-based).
 
@@ -274,6 +294,12 @@ DECOMPOSITION_RULES: dict[tuple[str, frozenset[str]], DecompRule | None] = {
     ("x", frozenset({"sx", "cx"})): _x_to_sx3(),
     ("x", frozenset({"sx", "rz"})): _x_to_sx3(),
     ("x", frozenset({"sx", "rz", "cx"})): _x_to_sx3(),
+    # x → rx(π) (ion-trap, which has no discrete X)
+    ("x", frozenset({"rx"})): _x_to_rx,
+    # y → rz x / ry(π). Needed because DD refocusing pulses (xy4, xy8, cpmg)
+    # are emitted as literal x/y gates *after* the first decomposition pass.
+    ("y", frozenset({"rz", "x"})): _y_to_rz_x,
+    ("y", frozenset({"ry"})): _y_to_ry,
     # z → rz(π)
     ("z", frozenset({"rz"})): _z_to_rz(),
     ("z", frozenset({"rz", "cx"})): _z_to_rz(),
@@ -288,6 +314,10 @@ DECOMPOSITION_RULES: dict[tuple[str, frozenset[str]], DecompRule | None] = {
     # swap → ms rz ms (ion-trap)
     ("swap", frozenset({"ms", "rz"})): _swap_to_ms(),
     ("swap", frozenset({"rx", "ms", "rz"})): _swap_to_ms(),
+    # swap on an rz-less ion-trap set: go via cx, which recursion then lowers
+    # to ms + rx/ry. Routing can insert SWAPs on any target given a coupling
+    # map, so every native set needs a reachable swap rule.
+    ("swap", frozenset({"rx", "ry", "ms"})): _swap_to_cx(),
     # ry → rz rx rz (general, for native sets with rz+rx)
     ("ry", frozenset({"rz", "rx"})): _ry_to_rz_rx_rz,
     ("ry", frozenset({"rz", "rx", "cx"})): _ry_to_rz_rx_rz,

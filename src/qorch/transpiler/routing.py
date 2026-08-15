@@ -11,6 +11,10 @@ from collections import deque
 
 from qorch.ir import Circuit, Gate, Measure, Operation, with_qubits
 
+# Two-qubit gates whose unitary is invariant under exchanging their operands,
+# so a reversed edge is fixed by just reordering the qubits.
+_SYMMETRIC_2Q: frozenset[str] = frozenset({"swap", "ms"})
+
 
 @dataclass(frozen=True)
 class CouplingMap:
@@ -189,6 +193,63 @@ def route(
     # now lives on. Output-bitstring order stays in logical order.
     new_measured = tuple(_logical_to_physical(q) for q in circuit.readout_qubits)
     return replace(circuit, gates=tuple(new_gates), measured=new_measured)
+
+
+def fix_gate_directions(circuit: Circuit, coupling_map: CouplingMap) -> Circuit:
+    """Rewrite two-qubit gates that sit on a *reversed* coupling-map edge.
+
+    Both routers only ever emit a gate on an allowed directed edge, so on its own
+    a routed circuit needs no fixing. The problem appears one stage later: the
+    SWAPs the routers insert are lowered to ``cx(a,b) cx(b,a) cx(a,b)``, and on a
+    directed map where only ``(a,b)`` is an edge that middle CX runs against the
+    hardware. Ion-trap targets hit the same thing via ``ms(b,a)``.
+
+    A symmetric gate (``swap``, ``ms``) is fixed by exchanging its operands. A CX
+    is flipped by Hadamard conjugation, using
+    ``cx(b,a) = (H_a ⊗ H_b) · cx(a,b) · (H_a ⊗ H_b)``. Those Hadamards are
+    generally *not* native, so callers must decompose again afterwards — see
+    :func:`qorch.transpiler.transpile`.
+
+    Conditions ride onto the whole expansion, exactly as in ``decompose``: the
+    condition reads classical bits no member of the expansion can write, so the
+    block still executes all-or-nothing.
+    """
+    if not coupling_map.edges:
+        return circuit
+
+    edges_set = set(coupling_map.edges)
+    new_gates: list[Operation] = []
+
+    for op in circuit.gates:
+        if len(op.qubits) != 2 or op.qubits in edges_set:
+            new_gates.append(op)
+            continue
+
+        a, b = op.qubits
+        if (b, a) not in edges_set:
+            raise ValueError(
+                f"{op.name!r} on qubits {(a, b)} lies on no coupling-map edge in "
+                f"either direction — route the circuit before fixing directions"
+            )
+
+        if op.name in _SYMMETRIC_2Q:
+            new_gates.append(with_qubits(op, (b, a)))
+        elif op.name == "cx":
+            cond = op.condition
+            new_gates.extend([
+                Gate("h", (a,), condition=cond),
+                Gate("h", (b,), condition=cond),
+                Gate("cx", (b, a), condition=cond),
+                Gate("h", (a,), condition=cond),
+                Gate("h", (b,), condition=cond),
+            ])
+        else:
+            raise ValueError(
+                f"cannot reverse two-qubit gate {op.name!r} onto edge {(b, a)}: "
+                f"no direction-flipping identity is known for it"
+            )
+
+    return replace(circuit, gates=tuple(new_gates))
 
 
 # ── SabreSWAP lookahead router ───────────────────────────────────────────
