@@ -27,6 +27,7 @@ from qorch.transpiler.gateset import CLIFFORD_T
 from qorch.transpiler.synthesis import (
     DEFAULT_PRECISION,
     SynthesisResult,
+    synthesize_ry,
     synthesize_rz,
 )
 
@@ -47,9 +48,9 @@ def _fidelity(u, v) -> float:
     return 0.5 * abs(sum(a.conjugate() * b for a, b in zip(u, v)))
 
 
-def _achieved_error(theta: float, result: SynthesisResult) -> float:
+def _achieved_error(theta: float, result: SynthesisResult, axis: str = "rz") -> float:
     circuit = Circuit(1, gates=tuple(Gate(name, (0,)) for name in result.gates))
-    return 1.0 - _fidelity(_matrix_of(circuit), _gate_matrix("rz", (theta,)))
+    return 1.0 - _fidelity(_matrix_of(circuit), _gate_matrix(axis, (theta,)))
 
 
 # ── exactness where exactness is possible ────────────────────────────────
@@ -137,6 +138,68 @@ def test_t_count_is_near_optimal() -> None:
 def test_synthesis_is_deterministic() -> None:
     """Same angle, same word — compilation must be reproducible."""
     assert synthesize_rz(0.31415).gates == synthesize_rz(0.31415).gates
+
+
+# ── Ry is synthesized directly, not via Clifford conjugation ─────────────
+
+
+@pytest.mark.parametrize("theta", [0.3, 1.1, 2.7, -0.45, 0.9876])
+def test_ry_reported_error_matches_measured_error(theta: float) -> None:
+    result = synthesize_ry(theta)
+    assert abs(result.error - _achieved_error(theta, result, "ry")) < 1e-9
+    assert result.error <= DEFAULT_PRECISION
+
+
+def test_ry_costs_no_more_t_gates_than_an_equivalent_rz() -> None:
+    """The point of the direct search: no Clifford-conjugation surcharge.
+
+    ``Ry(θ) = Rz(-π/2)·Rx(θ)·Rz(π/2)`` is exact but spells two Clifford
+    quarter-turns as T⁶ and T² — eight T gates a resource estimate then counts
+    as magic states. Ry must land in the same range as a Z rotation, not eight
+    above it.
+    """
+    for theta in (0.3, 1.1, 2.7, -0.45):
+        ry_cost = synthesize_ry(theta).t_count
+        rz_cost = synthesize_rz(theta).t_count
+        assert ry_cost <= rz_cost + 4, (
+            f"ry({theta}) costs {ry_cost} T vs {rz_cost} for rz — "
+            "the Clifford-conjugation surcharge is back"
+        )
+
+
+def test_ry_at_zero_costs_nothing() -> None:
+    assert synthesize_ry(0.0).gates == ()
+
+
+@pytest.mark.parametrize("theta", [math.pi / 2, math.pi])
+def test_ry_is_exact_at_clifford_angles(theta: float) -> None:
+    """Ry(π/2) and Ry(π) are Clifford; the search must find them outright."""
+    result = synthesize_ry(theta)
+    assert result.exact
+    assert result.error == 0.0
+    assert _achieved_error(theta, result, "ry") < 1e-12
+
+
+def test_ry_is_deterministic() -> None:
+    assert synthesize_ry(0.77).gates == synthesize_ry(0.77).gates
+
+
+def test_decomposed_ry_is_accurate_end_to_end() -> None:
+    for theta in (0.3, 1.1, -2.9):
+        lowered = decompose(Circuit(1, gates=(Gate("ry", (0,), (theta,)),)), CLIFFORD_T)
+        assert {g.name for g in lowered.gates} <= set(CLIFFORD_T.basis_gates)
+        error = 1.0 - _fidelity(_matrix_of(lowered), _gate_matrix("ry", (theta,)))
+        assert error <= DEFAULT_PRECISION
+
+
+def test_rx_pays_nothing_for_its_conjugation() -> None:
+    """Rx(θ) = H·Rz(θ)·H and H is native, so rx must match rz exactly."""
+    from qorch.transpiler.decompose import decompose_to_clifford_t
+
+    for theta in (0.3, 1.1, 2.7):
+        _, rx_t, _ = decompose_to_clifford_t(Circuit(1).rx(0, theta))
+        _, rz_t, _ = decompose_to_clifford_t(Circuit(1).rz(0, theta))
+        assert rx_t == rz_t
 
 
 # ── the error is visible from the circuit level ──────────────────────────

@@ -231,6 +231,21 @@ def _rz_to_clifford_t(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate
     return [Gate(name, (q,)) for name in result.gates]
 
 
+def _ry_to_clifford_t(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """Decompose Ry(θ) into H, T gates by searching for it directly.
+
+    Not via the Euler identity ``Rz(-π/2)·Rx(θ)·Rz(π/2)``: that is exact but
+    spells two Clifford quarter-turns as ``T⁶`` and ``T²`` in a basis with no
+    native ``S``, adding eight T gates that a resource estimate then counts as
+    magic states. See :func:`qorch.transpiler.synthesis.synthesize_ry`.
+    """
+    from qorch.transpiler.synthesis import synthesize_ry
+
+    q = qubits[0]
+    theta = float(params[0]) if params else 0.0
+    return [Gate(name, (q,)) for name in synthesize_ry(theta).gates]
+
+
 def clifford_t_synthesis_error(circuit: Circuit, precision: float | None = None) -> float:
     """Worst-case single-rotation approximation error in compiling to Clifford+T.
 
@@ -243,7 +258,11 @@ def clifford_t_synthesis_error(circuit: Circuit, precision: float | None = None)
     error is unavoidable, and an estimate built on the resulting T-count is only
     as meaningful as the approximation underneath it.
     """
-    from qorch.transpiler.synthesis import DEFAULT_PRECISION, synthesize_rz
+    from qorch.transpiler.synthesis import (
+        DEFAULT_PRECISION,
+        synthesize_ry,
+        synthesize_rz,
+    )
 
     target = DEFAULT_PRECISION if precision is None else precision
     worst = 0.0
@@ -252,8 +271,12 @@ def clifford_t_synthesis_error(circuit: Circuit, precision: float | None = None)
             continue
         if not op.params or isinstance(op.params[0], Parameter):
             continue
-        # rx/ry lower through rz, so the rotation angle is what matters here.
-        worst = max(worst, synthesize_rz(float(op.params[0]), target).error)
+        theta = float(op.params[0])
+        # ry is searched directly; rx is H·rz·H with H exact, so it inherits the
+        # Z error exactly. Asking the wrong synthesizer would misreport both.
+        error = (synthesize_ry(theta, target).error if op.name == "ry"
+                 else synthesize_rz(theta, target).error)
+        worst = max(worst, error)
     return worst
 
 
@@ -383,8 +406,8 @@ DECOMPOSITION_RULES: dict[tuple[str, frozenset[str]], DecompRule | None] = {
     ("cx", frozenset({"h", "cx", "t"})): None,
     ("t", frozenset({"h", "cx", "t"})): None,
     ("rz", frozenset({"h", "cx", "t"})): _rz_to_clifford_t,
-    ("rx", frozenset({"h", "cx", "t"})): _rx_to_h_rz_h,
-    ("ry", frozenset({"h", "cx", "t"})): _ry_to_rz_rx_rz,
+    ("rx", frozenset({"h", "cx", "t"})): _rx_to_h_rz_h,   # H is native, so free
+    ("ry", frozenset({"h", "cx", "t"})): _ry_to_clifford_t,
     ("x", frozenset({"h", "cx", "t"})): _x_to_h_zh,
     ("y", frozenset({"h", "cx", "t"})): _y_to_via_t,
     ("z", frozenset({"h", "cx", "t"})): _z_to_tttt,
