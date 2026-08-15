@@ -20,6 +20,7 @@ surprising thing for a compiler pass to do.
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Callable
 
 from qorch.ir import Circuit, Operation, with_qubits
 from qorch.transpiler.routing import CouplingMap, QubitQuality
@@ -156,10 +157,54 @@ def noise_adaptive_layout(
     return dense_layout(circuit, coupling_map, qubit_quality or {})
 
 
-LAYOUT_METHODS = {
+def cost_aware_layout(
+    circuit: Circuit,
+    coupling_map: CouplingMap,
+    qubit_quality: dict[int, QubitQuality] | None = None,
+    calibration=None,
+) -> Layout:
+    """Pick the candidate layout with the best *predicted fidelity* on the device.
+
+    Every other method optimizes a proxy — SWAP count, interaction distance —
+    which is blind to the fact that qubits differ. A SWAP across two excellent
+    qubits can be cheaper than a direct gate on a bad pair, and no amount of SWAP
+    counting discovers that.
+
+    This one routes each candidate and scores the *result* with the cost model,
+    so the decision is made on the quantity actually worth minimizing. Falls back
+    to :func:`dense_layout` without calibration, since with no device data there
+    is nothing to be calibration-aware about.
+    """
+    if calibration is None:
+        return dense_layout(circuit, coupling_map, qubit_quality)
+
+    from qorch.transpiler.cost import estimate_cost
+    from qorch.transpiler.routing import route_with_layout
+
+    candidates: dict[str, Layout] = {
+        "trivial": trivial_layout(circuit),
+        "dense": dense_layout(circuit, coupling_map, qubit_quality),
+        "noise-adaptive": noise_adaptive_layout(circuit, coupling_map, qubit_quality),
+    }
+
+    best_layout = candidates["dense"]
+    best_score = -1.0
+    for _name, layout in sorted(candidates.items()):
+        placed = apply_layout(circuit, layout)
+        routed = route_with_layout(placed, coupling_map, qubit_quality).circuit
+        score = estimate_cost(routed, calibration).success_probability
+        if score > best_score:
+            best_score, best_layout = score, layout
+    return best_layout
+
+
+# Typed loosely on purpose: the methods differ in arity — only cost-aware reads
+# calibration — and select_layout dispatches accordingly.
+LAYOUT_METHODS: dict[str, Callable[..., Layout]] = {
     "trivial": trivial_layout,
     "dense": dense_layout,
     "noise-adaptive": noise_adaptive_layout,
+    "cost-aware": cost_aware_layout,
 }
 
 
@@ -168,6 +213,7 @@ def select_layout(
     circuit: Circuit,
     coupling_map: CouplingMap,
     qubit_quality: dict[int, QubitQuality] | None = None,
+    calibration=None,
 ) -> Layout:
     """Run a named layout method, with an error listing the real options."""
     try:
@@ -176,4 +222,6 @@ def select_layout(
         raise ValueError(
             f"unknown layout method {method!r}; options: {sorted(LAYOUT_METHODS)}"
         ) from None
+    if method == "cost-aware":
+        return chooser(circuit, coupling_map, qubit_quality, calibration)
     return chooser(circuit, coupling_map, qubit_quality)
