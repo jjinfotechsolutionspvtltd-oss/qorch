@@ -24,6 +24,22 @@ class CouplingMap:
 
 
 @dataclass(frozen=True)
+class RoutingResult:
+    """A routed circuit together with where each logical qubit ended up.
+
+    ``final_layout[q]`` is the physical wire holding logical qubit ``q`` when the
+    circuit finishes. Routing permutes qubits as it inserts SWAPs, and without
+    this the permutation is unrecoverable: results can still be read (the router
+    remaps ``measured`` so bitstrings stay in logical order), but nothing can be
+    correlated back to a specific physical qubit — which is what per-qubit
+    calibration data, error attribution, and layout debugging all need.
+    """
+
+    circuit: Circuit
+    final_layout: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class QubitQuality:
     """Per-qubit quality metrics for noise-aware routing."""
 
@@ -134,8 +150,7 @@ def route(
     Routing is **semantically transparent**: single-qubit gates and the final
     ``measured`` read-out are remapped through the running logical→physical
     permutation, so the output distribution over *logical* qubits is unchanged
-    (only the physical wiring differs). The final layout is recorded so callers
-    can recover which physical wire each logical qubit ended on.
+    (only the physical wiring differs).
 
     Dynamic circuits route too: mid-circuit ``Measure``/``Reset`` follow their
     qubit onto its current wire, and classical conditions ride along untouched.
@@ -143,10 +158,20 @@ def route(
     conditioned gate — the layout permutation must stay deterministic, or the
     router would no longer know where a logical qubit lives after a branch.
 
-    Returns a new Circuit with SWAP gates inserted and read-out remapped.
+    Returns a new Circuit. Use :func:`route_with_layout` when you also need to
+    know which physical wire each logical qubit ended on.
     """
+    return route_with_layout(circuit, coupling_map, qubit_quality).circuit
+
+
+def route_with_layout(
+    circuit: Circuit,
+    coupling_map: CouplingMap,
+    qubit_quality: dict[int, QubitQuality] | None = None,
+) -> RoutingResult:
+    """:func:`route`, additionally reporting the final logical→physical layout."""
     if not coupling_map.edges:
-        return circuit
+        return RoutingResult(circuit, tuple(range(circuit.num_qubits)))
 
     adj = _build_adjacency(coupling_map.edges)
     edges_set = set(coupling_map.edges)
@@ -192,7 +217,11 @@ def route(
     # Remap read-out: to read logical qubit q, measure the physical wire it
     # now lives on. Output-bitstring order stays in logical order.
     new_measured = tuple(_logical_to_physical(q) for q in circuit.readout_qubits)
-    return replace(circuit, gates=tuple(new_gates), measured=new_measured)
+    final_layout = tuple(_logical_to_physical(q) for q in range(circuit.num_qubits))
+    return RoutingResult(
+        replace(circuit, gates=tuple(new_gates), measured=new_measured),
+        final_layout,
+    )
 
 
 def fix_gate_directions(circuit: Circuit, coupling_map: CouplingMap) -> Circuit:
@@ -353,14 +382,22 @@ def _logical_to_physical_inv(m: dict[int, int], logical: int) -> int:
 def _extended_set(
     gates: tuple[Operation, ...],
     front: set[int],
+    executed: set[int],
     lookahead: int,
 ) -> set[int]:
-    seen: set[int] = set(front)
+    """Upcoming gates used to score a candidate SWAP by what it enables next.
+
+    ``executed`` must be excluded, and used not to be: already-run gates stayed in
+    the extended set, so a SWAP that moved their operands back together scored as
+    progress. The router would then take that SWAP, undo it on the next
+    iteration for the same phantom reward, and oscillate forever — routing
+    ``h(0) cx(0,4) cx(1,3) cx(0,2)`` on a 5-qubit line never terminated.
+    """
+    skip = front | executed
     ext: set[int] = set()
     for i in range(len(gates)):
-        if i in seen:
+        if i in skip:
             continue
-        seen.add(i)
         ext.add(i)
         if len(ext) >= lookahead:
             break
@@ -370,6 +407,13 @@ def _extended_set(
 def _swap_score(
     edge: tuple[int, int],
     gates: tuple[Operation, ...],
+    # Scored by how much a candidate SWAP *reduces total distance* between the
+    # operands of pending gates — the SabreSWAP cost function. The previous
+    # version counted only gates the SWAP made immediately adjacent, which gives
+    # no signal at all when the front gate's operands are several hops apart: no
+    # single SWAP can adjoin them, so every candidate scored zero on the front
+    # layer and the choice fell to whatever helped some unrelated later gate.
+    # The router then wandered, and could revisit a layout it had already left.
     front: set[int],
     extended: set[int],
     edges_set: set[tuple[int, int]],
@@ -379,31 +423,24 @@ def _swap_score(
 ) -> float:
     a, b = edge
     if a not in phys_map or b not in phys_map:
-        return -1.0
+        return -1e18
     _apply_swap(phys_map, a, b)
-    f_score = 0
-    f_dist = 0.0
-    for i in front:
-        g = gates[i]
-        if len(g.qubits) >= 2:
-            q0 = _logical_to_physical_inv(phys_map, g.qubits[0])
-            q1 = _logical_to_physical_inv(phys_map, g.qubits[1])
-            if (q0, q1) in edges_set:
-                f_score += 1
-            else:
-                f_dist -= dist_cache.get((q0, q1), 5)
-    e_score = 0
-    for i in extended:
-        g = gates[i]
-        if len(g.qubits) >= 2:
-            q0 = _logical_to_physical_inv(phys_map, g.qubits[0])
-            q1 = _logical_to_physical_inv(phys_map, g.qubits[1])
-            if (q0, q1) in edges_set:
-                e_score += 1
+
+    def mean_distance(indices: set[int]) -> float:
+        total, count = 0.0, 0
+        for i in indices:
+            g = gates[i]
+            if len(g.qubits) >= 2:
+                q0 = _logical_to_physical_inv(phys_map, g.qubits[0])
+                q1 = _logical_to_physical_inv(phys_map, g.qubits[1])
+                total += dist_cache.get((q0, q1), 0.0)
+                count += 1
+        return total / count if count else 0.0
+
+    front_cost = mean_distance(front)
+    extended_cost = mean_distance(extended)
     _apply_swap(phys_map, a, b)
-    if f_score + e_score > 0:
-        return decay * f_score + (1.0 - decay) * e_score
-    return f_dist
+    return -(front_cost + decay * extended_cost)
 
 
 def _build_dist_cache(
@@ -457,9 +494,25 @@ def route_lookahead(
     Dynamic circuits are supported: the dependency DAG carries classical-bit
     hazards as well as qubit ordering, so measurements and the feed-forward
     gates that consume them keep their relative order under reordering.
+
+    Use :func:`route_lookahead_with_layout` when you also need the final
+    logical→physical layout.
     """
+    return route_lookahead_with_layout(
+        circuit, coupling_map, lookahead, decay, qubit_quality
+    ).circuit
+
+
+def route_lookahead_with_layout(
+    circuit: Circuit,
+    coupling_map: CouplingMap,
+    lookahead: int = 20,
+    decay: float = 0.5,
+    qubit_quality: dict[int, QubitQuality] | None = None,
+) -> RoutingResult:
+    """:func:`route_lookahead`, additionally reporting the final layout."""
     if not coupling_map.edges or not circuit.gates:
-        return circuit
+        return RoutingResult(circuit, tuple(range(circuit.num_qubits)))
 
     edges_set = set(coupling_map.edges)
     adj = _build_adjacency(coupling_map.edges)
@@ -481,6 +534,13 @@ def route_lookahead(
     executed: set[int] = set()
     dist_cache = _build_dist_cache(adj, circuit.num_qubits, quality=qubit_quality)
 
+    # A SWAP that fails to unblock anything is a bug, not a valid outcome, and
+    # the loop below would spin on it indefinitely. Bound the search so such a
+    # bug surfaces as a clear error instead of a hang: the worst honest case is
+    # a full permutation per gate, so this ceiling is far above anything real.
+    max_swaps = 4 * circuit.num_qubits * max(1, len(gates)) + 16
+    swaps_inserted = 0
+
     while len(executed) < len(gates):
         front = _front_layer(gates, preds, executed)
 
@@ -488,7 +548,7 @@ def route_lookahead(
         if n_ex > 0:
             continue
 
-        extended = _extended_set(gates, front, lookahead)
+        extended = _extended_set(gates, front, executed, lookahead)
 
         best_edge: tuple[int, int] | None = None
         best_score = -1e9
@@ -503,10 +563,23 @@ def route_lookahead(
 
         output.append(Gate("swap", (best_edge[0], best_edge[1])))
         _apply_swap(phys_map, best_edge[0], best_edge[1])
+        swaps_inserted += 1
+        if swaps_inserted > max_swaps:
+            raise ValueError(
+                f"lookahead routing failed to converge after {swaps_inserted} SWAPs "
+                f"with {len(gates) - len(executed)} of {len(gates)} operations still "
+                f"unrouted — the SWAP heuristic is not making progress"
+            )
 
     # Remap read-out through the final logical→physical permutation so the
     # routed circuit is semantically transparent (logical-order bitstrings).
     new_measured = tuple(
         _logical_to_physical_inv(phys_map, q) for q in circuit.readout_qubits
     )
-    return replace(circuit, gates=tuple(output), measured=new_measured)
+    final_layout = tuple(
+        _logical_to_physical_inv(phys_map, q) for q in range(circuit.num_qubits)
+    )
+    return RoutingResult(
+        replace(circuit, gates=tuple(output), measured=new_measured),
+        final_layout,
+    )

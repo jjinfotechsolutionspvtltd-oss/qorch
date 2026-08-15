@@ -12,12 +12,32 @@ from qorch.transpiler.optimizer import optimize
 from qorch.transpiler.routing import (
     CouplingMap,
     QubitQuality,
+    RoutingResult,
     fix_gate_directions,
     route,
     route_lookahead,
+    route_lookahead_with_layout,
+    route_with_layout,
 )
 
+from dataclasses import dataclass
+
 from qorch.ir import Circuit
+
+
+@dataclass(frozen=True)
+class TranspileResult:
+    """A transpiled circuit plus where each logical qubit physically ended up.
+
+    ``final_layout[q]`` is the physical wire holding logical qubit ``q`` after
+    the pipeline runs. Needed to correlate results with per-qubit calibration
+    data, attribute errors to specific hardware qubits, or debug a layout —
+    none of which the circuit alone can tell you, because routing's permutation
+    is not otherwise recoverable from the output.
+    """
+
+    circuit: Circuit
+    final_layout: tuple[int, ...]
 
 
 def _lower_to_target(
@@ -79,13 +99,47 @@ def transpile(
         Transpiled circuit ready for execution on the target: every gate is in
         ``target.basis_gates``, and every two-qubit gate sits on an edge of
         ``coupling_map`` in the direction the hardware implements it.
+
+        Use :func:`transpile_with_layout` when you also need to know which
+        physical wire each logical qubit ended on.
+    """
+    return transpile_with_layout(
+        circuit, target, coupling_map, qubit_quality, dd_sequence,
+        do_optimize, use_lookahead, lookahead, decay,
+    ).circuit
+
+
+def transpile_with_layout(
+    circuit: Circuit,
+    target: IndianGateSet,
+    coupling_map: CouplingMap | None = None,
+    qubit_quality: dict[int, QubitQuality] | None = None,
+    dd_sequence: str | None = None,
+    do_optimize: bool = True,
+    use_lookahead: bool = False,
+    lookahead: int = 20,
+    decay: float = 0.5,
+) -> TranspileResult:
+    """:func:`transpile`, additionally reporting the final logical→physical layout.
+
+    Routing permutes qubits, and only routing knows the permutation. Every later
+    stage — the second lowering, direction fixing, the optimizer, DD — rewrites
+    gates in place on the wires they are already on, so the layout routing
+    produced is still valid at the end of the pipeline.
+
+    Without a coupling map nothing is routed and the layout is the identity.
     """
     c = decompose(circuit, target)
+    final_layout = tuple(range(circuit.num_qubits))
     if coupling_map and coupling_map.edges:
         if use_lookahead:
-            c = route_lookahead(c, coupling_map, lookahead=lookahead, decay=decay, qubit_quality=qubit_quality)
+            routed = route_lookahead_with_layout(
+                c, coupling_map, lookahead=lookahead, decay=decay,
+                qubit_quality=qubit_quality,
+            )
         else:
-            c = route(c, coupling_map, qubit_quality)
+            routed = route_with_layout(c, coupling_map, qubit_quality)
+        c, final_layout = routed.circuit, routed.final_layout
     # Routing injects SWAPs, which are not native to most targets, so lower
     # again. The optimizer only merges or drops gates, never introduces new
     # kinds, so it cannot undo this.
@@ -101,7 +155,7 @@ def transpile(
         # single-qubit, so lowering them cannot affect connectivity.
         from qorch.mitigation.dd import insert_dd
         c = decompose(insert_dd(c, sequence=dd_sequence), target)
-    return c
+    return TranspileResult(circuit=c, final_layout=final_layout)
 
 
 __all__ = [
@@ -114,8 +168,13 @@ __all__ = [
     "fix_gate_directions",
     "route",
     "route_lookahead",
+    "route_with_layout",
+    "route_lookahead_with_layout",
+    "RoutingResult",
     "decompose_to_clifford_t",
     "transpile",
+    "transpile_with_layout",
+    "TranspileResult",
     "CouplingMap",
     "QubitQuality",
     "DECOMPOSITION_RULES",
