@@ -74,6 +74,60 @@ def _y_to_ry(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
     return [Gate("ry", (qubits[0],), (math.pi,))]
 
 
+def _id_to_nothing(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """id → ⟨nothing⟩. The identity needs no native gate on any target."""
+    return []
+
+
+def _sx_to_rx(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """sx → rx(π/2), since SX = e^{iπ/4}·Rx(π/2) (equal up to global phase)."""
+    return [Gate("rx", (qubits[0],), (math.pi / 2,))]
+
+
+def _t_to_rz(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """t → rz(π/4), since T = e^{iπ/8}·Rz(π/4) (equal up to global phase)."""
+    return [Gate("rz", (qubits[0],), (math.pi / 4,))]
+
+
+def _rz_to_ry_rx_ry(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """rz(θ) → ry(π/2) rx(θ) ry(-π/2) — the Z axis reached from an rx/ry-only set.
+
+    The mirror of :func:`_ry_to_rz_rx_rz`: conjugating an X rotation by a
+    quarter-turn about Y lands it on Z. Ion-trap targets have no native rz, so
+    without this every phase gate (rz, z, t, and anything that lowers through
+    them) is uncompilable there.
+    """
+    q = qubits[0]
+    theta = params[0] if params else 0.0
+    return [
+        Gate("ry", (q,), (math.pi / 2,)),
+        Gate("rx", (q,), (theta,)),
+        Gate("ry", (q,), (-math.pi / 2,)),
+    ]
+
+
+def _ms_to_cx(*qubits: int, params: tuple[float, ...] = ()) -> list[Gate]:
+    """ms(θ) = exp(-iθ X⊗X) → h h · cx · rz(2θ) · cx · h h.
+
+    Conjugating by Hadamards turns the XX interaction into ZZ, and
+    exp(-iθ Z⊗Z) is the standard CX–Rz(2θ)–CX ladder. Lets an ion-trap-native
+    circuit target a CX machine — the reverse of the existing cx → ms rule, and
+    needed because ``ms`` is a supported gate that no CX-based set could compile.
+
+    The emitted ``h`` and ``rz`` are lowered by the recursion when they are not
+    themselves native.
+    """
+    q0, q1 = qubits[0], qubits[1]
+    theta = params[0] if params else 0.0
+    return [
+        Gate("h", (q0,)), Gate("h", (q1,)),
+        Gate("cx", (q0, q1)),
+        Gate("rz", (q1,), (2 * theta,)),
+        Gate("cx", (q0, q1)),
+        Gate("h", (q0,)), Gate("h", (q1,)),
+    ]
+
+
 def _cx_to_ms_rx() -> DecompRule:
     """cx → ry_c(π/2) · ms(π/4) · rx_c(-π/2) · rx_t(-π/2) · ry_c(-π/2) (MS-based).
 
@@ -305,6 +359,8 @@ DECOMPOSITION_RULES: dict[tuple[str, frozenset[str]], DecompRule | None] = {
     ("z", frozenset({"rz", "cx"})): _z_to_rz(),
     ("z", frozenset({"rz", "sx"})): _z_to_rz(),
     ("z", frozenset({"rz", "sx", "cx"})): _z_to_rz(),
+    # z on an rz-less set: emit rz anyway and let the recursion lower it.
+    ("z", frozenset({"rx", "ry"})): _z_to_rz(),
     # cx → rx ms rx (ion-trap)
     ("cx", frozenset({"rx", "ms"})): _cx_to_ms_rx(),
     ("cx", frozenset({"rx", "ry", "ms"})): _cx_to_ms_rx(),
@@ -327,6 +383,25 @@ DECOMPOSITION_RULES: dict[tuple[str, frozenset[str]], DecompRule | None] = {
     # rx → h rz h (general)
     ("rx", frozenset({"rz", "h"})): _rx_to_h_rz_h,
     ("rx", frozenset({"rz", "h", "cx"})): _rx_to_h_rz_h,
+    # ── rules reaching the sx/rz superconducting set ───────────────────────
+    # A basis of (cx, sx, rz, x) has no native h, so the rz+h rules above never
+    # matched it and rx/ry were uncompilable for the most common superconducting
+    # target. Emit the h/rx forms anyway — the recursion lowers h → rz sx rz.
+    ("rx", frozenset({"rz", "sx"})): _rx_to_h_rz_h,
+    ("ry", frozenset({"rz", "sx"})): _ry_to_rz_rx_rz,
+    # ── rules reaching the rx/ry ion-trap set ──────────────────────────────
+    # Mirror gap: no native rz, so every phase gate was unreachable.
+    ("rz", frozenset({"rx", "ry"})): _rz_to_ry_rx_ry,
+    ("sx", frozenset({"rx"})): _sx_to_rx,
+    # ── universally reachable ──────────────────────────────────────────────
+    # t is a phase gate: any set with rz gets it directly, and an rz-less set
+    # reaches it through the rz rule above.
+    ("t", frozenset({"rz"})): _t_to_rz,
+    ("t", frozenset({"rx", "ry"})): _t_to_rz,
+    # ms is the ion-trap entangler; any CX-based set can rebuild it.
+    ("ms", frozenset({"cx"})): _ms_to_cx,
+    # The identity compiles to nothing at all, on every target.
+    ("id", frozenset()): _id_to_nothing,
     # ── Clifford+T rules (target: h, cx, t) ────────────────────────────────
     ("h", frozenset({"h", "cx", "t"})): None,
     ("cx", frozenset({"h", "cx", "t"})): None,
