@@ -38,6 +38,11 @@ class ResourceEstimate:
     runtime_seconds: float
     target_logical_error: float
     physical_error_rate: float
+    # Worst-case error from approximating a rotation in Clifford+T. Zero when the
+    # circuit's angles are all multiples of π/4. Non-zero means the T-count above
+    # describes a circuit that only approximates the one you asked for — the
+    # estimate is sound, but the thing being estimated is not exactly your circuit.
+    synthesis_error: float = 0.0
 
 
 def _logical_error(distance: int, physical_error_rate: float) -> float:
@@ -82,9 +87,13 @@ def estimate_resources(
         A :class:`ResourceEstimate`. Requires ``physical_error_rate`` below the
         ~1% surface-code threshold, else no finite distance suffices.
     """
-    from qorch.transpiler.decompose import decompose_to_clifford_t
+    from qorch.transpiler.decompose import (
+        clifford_t_synthesis_error,
+        decompose_to_clifford_t,
+    )
 
     _, t_count, t_depth = decompose_to_clifford_t(circuit)
+    synthesis_error = clifford_t_synthesis_error(circuit)
     n = circuit.num_qubits
 
     # Total "logical operations" that each must stay coherent: spread the error
@@ -114,12 +123,13 @@ def estimate_resources(
         runtime_seconds=runtime_seconds,
         target_logical_error=target_logical_error,
         physical_error_rate=physical_error_rate,
+        synthesis_error=synthesis_error,
     )
 
 
 def format_estimate(est: ResourceEstimate) -> str:
     """Human-readable resource-estimate report."""
-    return "\n".join([
+    lines = [
         "Fault-Tolerant Resource Estimate",
         "================================",
         f"  Algorithm qubits:     {est.algorithm_qubits}",
@@ -131,4 +141,13 @@ def format_estimate(est: ResourceEstimate) -> str:
         f"  Logical err/cycle:    {est.logical_error_per_cycle:.2e}",
         f"  Physical qubits:      {est.physical_qubits:,}",
         f"  Est. runtime:         {est.runtime_seconds * 1e3:.3f} ms",
-    ])
+    ]
+    if est.synthesis_error > 0:
+        lines += [
+            f"  Rotation synth error: {est.synthesis_error:.2e} (per rotation)",
+            "    ↳ angles are not all multiples of π/4, so the T-count above is",
+            "      for a circuit that approximates the one you gave.",
+        ]
+    else:
+        lines.append("  Rotation synthesis:   exact (all angles are π/4 multiples)")
+    return "\n".join(lines)

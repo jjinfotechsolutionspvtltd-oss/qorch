@@ -8,7 +8,7 @@
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
 
 ```bash
-pip install -e ".[dev]" && python -m pytest      # 547 tests, ~40s, no services required
+pip install -e ".[dev]" && python -m pytest      # 580 tests, ~40s, no services required
 ```
 
 ```python
@@ -25,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 547 tests, mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 580 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -161,16 +161,28 @@ quality = {0: QubitQuality(0.99), 1: QubitQuality(0.95), 2: QubitQuality(0.99), 
 routed = route_lookahead(c, cmap, qubit_quality=quality, lookahead=20, decay=0.5)
 ```
 
-### 7. Clifford+T decomposition
+### 7. Clifford+T decomposition + rotation synthesis
 
-**What.** Decompose arbitrary circuits into the fault-tolerant `{h, cx, t}` gate set with T-count and T-depth reporting.
+**What.** Decompose arbitrary circuits into the fault-tolerant `{h, cx, t}` gate set with T-count and T-depth reporting, including **meet-in-the-middle synthesis** of arbitrary-angle rotations.
 **Why.** T gates dominate fault-tolerant cost (magic-state distillation); T-count is the headline resource metric.
 
+Clifford+T is a *discrete* gate set: multiples of π/4 are exact (powers of T), and every other angle must be approximated. qorch reaches **error ≤ 1e-3 in ~24 T gates** — close to the ~3·log₂(1/ε) an optimal synthesizer needs — and **always reports the error it achieved**.
+
+> Solovay–Kitaev is the textbook answer here and the wrong one for this library: it reaches any precision but needs thousands of T gates per rotation, which would inflate exactly the metric the resource estimator consumes. Meet-in-the-middle finds near-minimal words instead.
+
 ```python
+import math
 from qorch.transpiler import decompose_to_clifford_t
+from qorch.transpiler.decompose import clifford_t_synthesis_error
+from qorch.transpiler.synthesis import synthesize_rz
 
 result, t_count, t_depth = decompose_to_clifford_t(Circuit(2).h(0).cx(0, 1).rz(0, 0.3))
-print(f"T-count: {t_count}, T-depth: {t_depth}")
+
+synthesize_rz(math.pi / 4)                   # exact=True,  error=0.0,     1 T gate
+synthesize_rz(0.3)                           # exact=False, error≈8.9e-4, ~18 T gates
+synthesize_rz(0.3, precision=3e-4).t_count   # ask for more accuracy, pay in T gates
+
+clifford_t_synthesis_error(Circuit(1).rz(0, 0.3))   # worst per-rotation error
 ```
 
 ### 8. Fault-tolerant resource estimation
@@ -404,17 +416,18 @@ src/qorch/
   transpiler/
     gateset.py           # Indian-native + Clifford+T gate-set definitions
     decompose.py         # recursive decomposition (incl. Clifford+T)
+    synthesis.py         # meet-in-the-middle Rz → Clifford+T, with reported error
     routing.py           # greedy + SabreSWAP routing (layout-correct) + edge-direction fixing
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 547 unit tests (~95% coverage)
+tests/                   # 580 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 547 tests
+python -m pytest                 # 580 tests
 python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check

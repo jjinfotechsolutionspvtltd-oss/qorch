@@ -158,32 +158,25 @@ def test_ms_survives_a_round_trip_through_cx() -> None:
     assert _equal_up_to_phase(_unitary(source), _unitary(back))
 
 
-def test_clifford_t_arbitrary_angle_approximation_is_documented_but_weak() -> None:
-    """Pins the *current*, poor approximation quality for arbitrary angles.
+def test_clifford_t_arbitrary_angle_approximation_is_accurate() -> None:
+    """Arbitrary angles are approximated to the advertised precision.
 
     Clifford+T cannot express an arbitrary rotation exactly, so some error is
-    inherent. The size of it is not: ``_rz_to_clifford_t`` runs a BFS capped at
-    depth 8 and settles for a single ``t`` on θ=0.3 — process fidelity ≈0.97 for
-    one rotation, which compounds badly across a real circuit and is reported to
-    the caller nowhere.
-
-    This test asserts what is true today rather than what should be true, so that
-    improving the synthesis makes it fail loudly and get tightened.
+    inherent — but it must be small and it must be *reported*. This is the
+    tightened successor to a test that pinned the old depth-8 BFS at fidelity
+    ≈0.97; see :mod:`qorch.transpiler.synthesis`.
     """
-    worst = 1.0
-    for theta in (0.3, 1.1, 2.7):
+    from qorch.transpiler.synthesis import DEFAULT_PRECISION
+
+    for theta in (0.3, 1.1, 2.7, -0.45, 0.12345):
         source = _one_gate_circuit("rz", theta)
         lowered = decompose(source, CLIFFORD_T)
         u, v = _unitary(source), _unitary(lowered)
-        fidelity = abs(sum(a.conjugate() * b for a, b in zip(u, v))) / 2.0
-        worst = min(worst, fidelity)
-        assert not _equal_up_to_phase(u, v), "unexpectedly exact — tighten this test"
-
-    assert worst > 0.95, "approximation got worse than the recorded baseline"
-    assert worst < 0.999, (
-        "synthesis improved past the recorded baseline — raise this bound and "
-        "consider whether arbitrary angles can now be asserted near-exact"
-    )
+        error = 1.0 - abs(sum(a.conjugate() * b for a, b in zip(u, v))) / 2.0
+        assert error <= DEFAULT_PRECISION, (
+            f"rz({theta}) → Clifford+T error {error:.2e} exceeds the "
+            f"advertised {DEFAULT_PRECISION:.0e}"
+        )
 
 
 def test_unitary_check_would_catch_a_wrong_rule() -> None:
