@@ -1,6 +1,22 @@
 # qorch — Indian Quantum Orchestration Layer
 
+[![CI](https://github.com/jjinfotechsolutionspvtltd-oss/qorch/actions/workflows/ci.yml/badge.svg)](https://github.com/jjinfotechsolutionspvtltd-oss/qorch/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](pyproject.toml)
+
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
+
+```bash
+pip install -e ".[dev]" && python -m pytest      # 409 tests, ~40s, no services required
+```
+
+```python
+from qorch import Circuit, LocalSimulator
+
+bell = Circuit(2).h(0).cx(0, 1).measure(0, 1)
+LocalSimulator(seed=1).run(bell, shots=1000).counts    # {'00': ~500, '11': ~500}
+```
 
 ## Why qorch?
 
@@ -9,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 381 tests (384 with the optional Qiskit extra), mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 409 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -411,4 +427,25 @@ qorch is a research project focused on **Indian quantum readiness**:
 - Dynamic circuits + a full QEC stack (stabilizer sim, codes, surface-code threshold)
 - QMI binary format for low-latency QPU communication
 - No foreign vendor lock-in — sovereign, dependency-free core
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the five
+rules that govern every change (the dependency-free core is the load-bearing one), and
+what a convincing test looks like in a codebase where bugs return plausible-looking
+wrong answers rather than crashing.
+
+Good places to start: compiler passes (layout, commutation-based cancellation,
+scheduling), QEC decoders, and new backend adapters behind the existing HAL. Issues
+labeled `good first issue` are scoped to be self-contained.
+
+Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). To report a
+vulnerability, see [SECURITY.md](SECURITY.md) — please don't open a public issue.
+
+## License
+
+[Apache License 2.0](LICENSE) — Copyright 2026 JJISPL Quantum Technologies.
+
+Permissive, with an explicit patent grant. Use it commercially, modify it, redistribute
+it; keep the notice and state your changes.
 ```

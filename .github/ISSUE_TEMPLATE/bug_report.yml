@@ -1,0 +1,70 @@
+name: Bug report
+description: Something produces a wrong result, an error, or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Quantum bugs rarely crash — they return a plausible distribution that happens to
+        be wrong. The circuit and the expected-vs-actual numbers are what make a report
+        actionable, so please include both.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+      placeholder: |
+        Transpiling a 3-qubit circuit for TIFR_SUPERCONDUCTING returns a distribution
+        with q1 and q2 swapped relative to the untranspiled circuit.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: >
+        A self-contained snippet we can run. Seed the simulator
+        (`LocalSimulator(seed=1)`) so the result is deterministic.
+      render: python
+      placeholder: |
+        from qorch import Circuit, LocalSimulator
+
+        c = Circuit(3).h(0).cx(0, 2).measure(0, 1, 2)
+        print(LocalSimulator(seed=1).run(c, shots=1000).counts)
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: Expected vs actual output
+      description: Paste both distributions, or both error messages.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: qorch version
+      description: "`python -c \"import qorch; print(qorch.__version__)\"` — or the commit SHA."
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version and OS
+      placeholder: "3.12 on Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extras
+    attributes:
+      label: Optional extras installed
+      description: >
+        Does it reproduce with the dependency-free core alone, or only with the
+        qiskit/numpy extras installed? This narrows it down fast.

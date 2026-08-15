@@ -8,10 +8,27 @@ version = "0.1.0"
 description = "QS-004 Quantum Orchestration Layer — hardware-agnostic control plane for quantum execution"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "LicenseRef-Proprietary"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "JJISPL Quantum Technologies" }]
+keywords = ["quantum", "quantum-computing", "transpiler", "simulator", "qec", "error-mitigation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
+]
 # The M1 vertical slice is intentionally dependency-free (ADR-6).
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/jjinfotechsolutionspvtltd-oss/qorch"
+Repository = "https://github.com/jjinfotechsolutionspvtltd-oss/qorch"
+Issues = "https://github.com/jjinfotechsolutionspvtltd-oss/qorch/issues"
 
 [project.optional-dependencies]
 # M2+: real-QPU adapters and transpiler reuse layer in.

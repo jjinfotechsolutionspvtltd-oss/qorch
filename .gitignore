@@ -13,3 +13,7 @@ venv/
 .env.*
 *.key
 *.pem
+
+# internal audit + strategy assessments — not for the public repo
+audit/
+qorch-audit/
