@@ -157,28 +157,87 @@ class QVResult:
     success: bool | None  # True if HOP > 2/3 with statistical confidence
 
 
-def _heavy_outputs(n: int) -> list[int]:
-    """Return bitstrings whose integer value is >= 2^{n-1}.
-    
-    For an n-qubit random circuit, the ideal output distribution has
-    half its probability in bitstrings >= 2^{n-1} (the "heavy outputs").
+def _heavy_outputs(probabilities: dict[int, float] | None) -> set[int]:
+    """Indices whose ideal probability exceeds the median — the heavy outputs.
+
+    This is the definition the Quantum Volume protocol actually uses, and it is
+    a property of *each circuit's own* output distribution.
+
+    The previous implementation returned every bitstring whose integer value was
+    at least 2^(n-1) — the top half of the numeric range — on the stated grounds
+    that "the ideal output distribution has half its probability" there. That is
+    true only of a *uniform* distribution, and QV exists precisely because a
+    random circuit's distribution is not uniform: it is Porter-Thomas, which is
+    what puts ~0.85 of the weight in the heavy half rather than 0.5. Measuring
+    the numeric top half instead simply samples an arbitrary 50% of outcomes, so
+    an ideal device scored ~0.35–0.5 and could never pass.
     """
-    threshold = 1 << (n - 1)
-    return list(range(threshold, 1 << n))
+    if not probabilities:
+        return set()
+    ordered = sorted(probabilities.values())
+    middle = len(ordered) // 2
+    median = (
+        ordered[middle]
+        if len(ordered) % 2
+        else 0.5 * (ordered[middle - 1] + ordered[middle])
+    )
+    return {index for index, p in probabilities.items() if p > median}
+
+
+def _haar_su2(rng: random.Random, qubit: int) -> list[Gate]:
+    """A Haar-random single-qubit rotation, as rz·ry·rz.
+
+    ``beta`` is drawn from ``2·arccos(sqrt(u))`` rather than uniformly: uniform
+    Euler angles are *not* uniform on SU(2), and a QV circuit built from them
+    does not produce the Porter-Thomas distribution the benchmark assumes.
+    """
+    alpha = rng.uniform(0, 2 * math.pi)
+    beta = 2.0 * math.acos(math.sqrt(rng.random()))
+    gamma = rng.uniform(0, 2 * math.pi)
+    return [
+        Gate("rz", (qubit,), (alpha,)),
+        Gate("ry", (qubit,), (beta,)),
+        Gate("rz", (qubit,), (gamma,)),
+    ]
+
+
+def _random_su4(rng: random.Random, q0: int, q1: int) -> list[Gate]:
+    """A random two-qubit gate with the structure of a general SU(4).
+
+    Any SU(4) factors as (A₁⊗A₂)·N(a,b,c)·(B₁⊗B₂) — local rotations either side
+    of a canonical entangler — and the entangler needs three CNOTs. Building
+    that shape with random local rotations and random interaction angles gives
+    the entangling power a QV layer requires.
+
+    The previous circuit was a fixed h-cx-rz-rz-cx-h with two random angles.
+    That is one point in SU(4) with two knobs, not a random element of it, so
+    the output distribution never became Porter-Thomas.
+    """
+    gates: list[Gate] = []
+    gates += _haar_su2(rng, q0) + _haar_su2(rng, q1)
+    gates.append(Gate("cx", (q1, q0)))
+    gates.append(Gate("rz", (q0,), (rng.uniform(0, 2 * math.pi),)))
+    gates.append(Gate("ry", (q1,), (rng.uniform(0, 2 * math.pi),)))
+    gates.append(Gate("cx", (q0, q1)))
+    gates.append(Gate("ry", (q1,), (rng.uniform(0, 2 * math.pi),)))
+    gates.append(Gate("cx", (q1, q0)))
+    gates += _haar_su2(rng, q0) + _haar_su2(rng, q1)
+    return gates
 
 
 def _su4_su2_su4_circuit(num_qubits: int, rng: random.Random) -> Circuit:
-    """Generate a random circuit of width n, depth n."""
+    """A width-n, depth-n Quantum Volume model circuit.
+
+    Each layer shuffles the qubits into pairs and applies a random SU(4) to
+    each, which is the model circuit the QV protocol specifies.
+    """
     c = Circuit(num_qubits)
     for _layer in range(num_qubits):
-        # Pair qubits randomly
         qubits = list(range(num_qubits))
         rng.shuffle(qubits)
         for i in range(0, num_qubits - 1, 2):
-            q0, q1 = qubits[i], qubits[i + 1]
-            theta = rng.uniform(0, 2 * math.pi)
-            phi = rng.uniform(0, 2 * math.pi)
-            c = c.h(q0).cx(q0, q1).rz(q0, theta).rz(q1, phi).cx(q0, q1).h(q0)
+            for gate in _random_su4(rng, qubits[i], qubits[i + 1]):
+                c = c._add(gate.name, *gate.qubits, params=gate.params)
     return c
 
 
@@ -198,16 +257,19 @@ def quantum_volume(
     hop_list: list[float] = []
 
     for _ in range(trials):
-        circuit = _su4_su2_su4_circuit(width, rng)
-        circuit = circuit.measure(*range(width))
+        model = _su4_su2_su4_circuit(width, rng)
+        circuit = model.measure(*range(width))
         result = backend.run(circuit, shots=shots)
 
-        heavy = set(_heavy_outputs(width))
-        total_heavy = 0
-        for bitstring, count in result.counts.items():
-            val = int(bitstring, 2)
-            if val in heavy:
-                total_heavy += count
+        # Heavy outputs are defined by each circuit's own *ideal* distribution,
+        # so they have to be computed from a noiseless simulation of that
+        # circuit — not from the measured counts, which is what the device is
+        # being judged against.
+        heavy = _heavy_outputs(_compute_ideal_probs(model, width))
+        total_heavy = sum(
+            count for bitstring, count in result.counts.items()
+            if int(bitstring, 2) in heavy
+        )
         hop = total_heavy / shots if shots > 0 else 0.0
         hop_list.append(hop)
 
