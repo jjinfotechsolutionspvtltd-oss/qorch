@@ -12,7 +12,7 @@ import math
 import random
 from dataclasses import dataclass
 
-from qorch.backends import numpy_kernel
+from qorch.backends import gpu_kernel, numpy_kernel
 from qorch.backends.base import Backend, BackendProperties, JobResult
 from qorch.gates import GATES, gate_matrix
 from qorch.ir import Circuit, Measure, Reset, bound_params
@@ -129,6 +129,7 @@ class LocalSimulator(Backend):
         gate_noise: GateNoise | None = None,
         use_numpy: bool | None = None,
         memory: bool = False,
+        use_gpu: bool = False,
     ) -> None:
         """``use_numpy=None`` (the default) picks the faster kernel per circuit.
 
@@ -146,8 +147,14 @@ class LocalSimulator(Backend):
         self._gate_noise = gate_noise or GateNoise()
         self._use_numpy = use_numpy
         self._memory = memory
+        self._use_gpu = use_gpu
         if use_numpy and not numpy_kernel.is_available():
             raise ValueError("use_numpy=True but numpy is not installed")
+        if use_gpu and not gpu_kernel.is_available():
+            raise ValueError(
+                "use_gpu=True but no CUDA device is available "
+                "(install qorch[gpu] and check nvidia-smi)"
+            )
 
     def _should_use_numpy(self, circuit: Circuit) -> bool:
         if self._use_numpy is not None:
@@ -252,6 +259,11 @@ class LocalSimulator(Backend):
         precision; the numpy one just moves the per-amplitude loop into compiled
         code, which is what makes 14+ qubits practical.
         """
+        if self._use_gpu:
+            # Opt-in only, never automatic. The numpy path switches on above a
+            # *measured* crossover; no such measurement exists for the GPU, and
+            # inventing a threshold would present a guess as a tuning decision.
+            return gpu_kernel.evolve(circuit)
         if self._should_use_numpy(circuit):
             return numpy_kernel.evolve(circuit)
         return self._evolve_python(circuit)

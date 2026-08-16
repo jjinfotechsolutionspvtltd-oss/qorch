@@ -8,7 +8,7 @@
 A sovereign, minimal, correct quantum software stack designed for India's emerging quantum hardware ecosystem. **Hardware-agnostic from day one** — any Indian QPU (from DRDO, ISRO, IITs, C-DAC) plugs in as one `Backend` adapter with zero core changes.
 
 ```bash
-pip install -e ".[dev]" && python -m pytest      # 1009 tests, ~40s, no services required
+pip install -e ".[dev]" && python -m pytest      # 1032 tests, ~40s, no services required
 ```
 
 ```python
@@ -25,7 +25,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Zero required dependencies** — the core is stdlib-only and never imports Qiskit or Cirq; `import qorch` pulls in nothing third-party. It is fully usable air-gapped.
 - **Interoperability without lock-in** — Qiskit is an *optional, opt-in* adapter (`pip install qorch[qiskit]`) so the *same* `Circuit` can also run on Qiskit Aer or IBM hardware. You choose it; nothing in qorch requires it, and no qorch capability depends on a foreign vendor. (numpy/scipy are likewise optional, used only for a couple of benchmark fits.)
 - **Sovereign architecture** — clean hardware-abstraction layer designed for Indian hardware adapters; reproducible and auditable.
-- **Correct by construction** — immutable IR, 1009 tests, mypy-clean, with property and cross-simulator validation.
+- **Correct by construction** — immutable IR, 1032 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
 ## Install
@@ -34,6 +34,7 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 pip install -e .            # dependency-free core
 pip install -e .[qiskit]    # optional: Qiskit Aer / IBM hardware adapter
 pip install -e .[dev]       # optional: pytest, ruff, mypy, numpy
+pip install -e .[gpu]       # optional: CuPy GPU kernel — ⚠️ UNVERIFIED, see below
 ```
 
 ---
@@ -71,6 +72,20 @@ for angle in (0.0, 1.57, 3.14):
     LocalSimulator(seed=1).run(bound, shots=1000)
 print(ansatz.parameters)                          # (Parameter(name='theta'),)
 ```
+
+### 2b. GPU kernel — ⚠️ shipped unverified
+
+**Status: this has never been run on a CUDA device by its authors.** It is included so that someone with hardware can try it, not because it is known to work.
+
+**What is tested.** The whole kernel algorithm. `evolve_with` takes its array module as a parameter, so CI runs the identical code path with numpy injected and compares against the pure-Python kernel across 40 random circuits. The maths is not guesswork.
+
+**What is not tested.** Importing CuPy, detecting a device, and moving the statevector to and from device memory. If it breaks, those four lines are where to look.
+
+```python
+LocalSimulator(use_gpu=True)      # opt-in only; warns that it is unverified
+```
+
+It is **never selected automatically**. The numpy kernel switches on above a *measured* 8-qubit crossover; no such measurement exists for a GPU, and inventing a threshold would present a guess as a tuning decision. If you have hardware and it works, measuring that crossover is the natural next contribution.
 
 ### 3. Backends (the hardware-abstraction layer)
 
@@ -426,13 +441,13 @@ src/qorch/
     optimizer.py         # gate cancellation + rotation merging
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
-tests/                   # 1009 unit tests (~95% coverage)
+tests/                   # 1032 unit tests (~95% coverage)
 ```
 
 ## Tests
 
 ```bash
-python -m pytest                 # 1009 tests
+python -m pytest                 # 1032 tests
 python -m pytest --cov=qorch     # with coverage (~95%)
 ruff check src/ tests/           # lint
 mypy src/                        # type check
