@@ -28,20 +28,80 @@ As India invests in indigenous quantum processors (superconducting at TIFR/DRDO,
 - **Correct by construction** — immutable IR, 1032 tests, mypy-clean, with property and cross-simulator validation.
 - **Active research** — error mitigation, tomography, benchmarking, Clifford+T decomposition, dynamic circuits, and a full quantum-error-correction stack.
 
-## Install
+## Getting started — Linux, macOS, Windows
+
+The core has **no third-party dependencies and no compiled extensions**, so the same source runs identically on all three platforms. Nothing below needs a compiler, a service, or a GPU. Python 3.11+ is the only requirement.
+
+### Linux / macOS
 
 ```bash
-pip install -e .            # dependency-free core
-pip install -e .[qiskit]    # optional: Qiskit Aer / IBM hardware adapter
-pip install -e .[dev]       # optional: pytest, ruff, mypy, numpy
-pip install -e .[gpu]       # optional: CuPy GPU kernel — ⚠️ UNVERIFIED, see below
+git clone https://github.com/jjinfotechsolutionspvtltd-oss/qorch.git
+cd qorch
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+python -m pytest
 ```
+
+### Windows — PowerShell
+
+```powershell
+git clone https://github.com/jjinfotechsolutionspvtltd-oss/qorch.git
+cd qorch
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+python -m pytest
+```
+
+> If activation is blocked, PowerShell's execution policy is the cause:
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
+### Windows — cmd.exe
+
+```bat
+py -m venv .venv
+.venv\Scripts\activate.bat
+pip install -e ".[dev]"
+python -m pytest
+```
+
+### Optional extras
+
+| extra | command | platforms | notes |
+|---|---|---|---|
+| *(none)* | `pip install -e .` | Linux, macOS, Windows | the whole core; stdlib only, works air-gapped |
+| `dev` | `pip install -e ".[dev]"` | all | pytest, ruff, mypy, numpy |
+| `qiskit` | `pip install -e ".[qiskit]"` | all | Qiskit Aer / IBM adapter |
+| `gpu` | `pip install -e ".[gpu]"` | Linux, Windows **only** | CuPy needs CUDA; **macOS has none**. ⚠️ [unverified](#2b-gpu-kernel--️-shipped-unverified) |
+
+### Platform notes worth knowing
+
+- **Quoting.** Use `pip install -e ".[dev]"` everywhere. Unquoted `.[dev]` works in `cmd.exe` and PowerShell but is glob-expanded by `zsh`, the default shell on macOS.
+- **`python` vs `python3`.** macOS and most Linux distributions reserve `python3`; Windows ships the `py` launcher. Inside an activated venv, plain `python` is correct on all three.
+- **Line endings.** Everything is text and no test depends on newline style, so `core.autocrlf` needs no special setting.
+- **GPU on macOS.** Apple hardware has no CUDA, so the `gpu` extra cannot install. The pure-Python and numpy kernels are unaffected and are what the library uses by default.
 
 ---
 
 ## Features
 
 Each feature below states **what** it is, **why** it exists, and **how** to use it.
+
+| | | |
+|---|---|---|
+| [1. Circuit IR](#1-circuit-ir--serialization) | [2. Symbolic parameters](#2-symbolic-parameters) | [2b. GPU kernel ⚠️](#2b-gpu-kernel--️-shipped-unverified) |
+| [3. Backends (HAL)](#3-backends-the-hardware-abstraction-layer) | [4. Device calibration](#4-device-calibration-backend-api-v2) | [5. Transpiler pipeline](#5-transpiler--decompose--route--lower--optimize--dd) |
+| [6. SabreSWAP routing](#6-sabreswap-lookahead-routing) | [7. Clifford+T synthesis](#7-cliffordt-decomposition--rotation-synthesis) | [8. FT resource estimation](#8-fault-tolerant-resource-estimation) |
+| [9. Algorithm templates](#9-algorithm-templates-adp) | [10. State tomography](#10-state-tomography) | [11. Error mitigation](#11-error-mitigation) |
+| [12. Noise builders](#12-noise-model-builders) | [13. Benchmarking](#13-benchmarking--certification) | [14. QMI format](#14-qmi-binary-format) |
+| [15. Dynamic circuits](#15-dynamic-circuits-mid-circuit-measurement--feed-forward) | [16. Error correction](#16-quantum-error-correction) | [17. Batch scheduler](#17-batch-scheduler) |
+| [18. Pulse control](#18-pulse-level-control) | [19. Pass manager](#19-pass-manager--transpile-metrics) | [20. Gate registry](#20-gate-registry) |
+| [21. Layout pass](#21-layout-pass) | [22. Fusion + commutation](#22-euler-fusion--commutation-cancellation) | [23. Cost model](#23-calibration-cost-model) |
+| [24. Scheduling & timing](#24-scheduling--timing) | [25. Async execution](#25-async-execution-submitpollcancel) | [26. JobResult v2](#26-jobresult-v2) |
+| [27. Fan-out scheduler](#27-fan-out-scheduler--job-store) | [28. Certification suite](#28-certification-suite) | [29. Tool layer (MCP)](#29-tool-layer-mcp-ready) |
+| [30. Offline copilot](#30-grounded-offline-copilot) | [31. Photonic IR](#31-photonic-ir-family) | [32. Neutral atoms](#32-neutral-atom-arrays) |
+| [33. CLI](#33-cli) | | |
 
 ### 1. Circuit IR + serialization
 
@@ -382,7 +442,223 @@ p1 = abs(pulse_unitary(calibrate_gaussian(1.3))[2]) ** 2   # index 2 = U[1,0]
 Waveform.drag(duration=20, amp=1.0, sigma=5.0, beta=0.3)   # leakage-suppressing DRAG
 ```
 
-### 19. CLI
+### 19. Pass manager + transpile metrics
+
+**What.** The compile pipeline as an ordered list of named passes, with per-pass cost recorded.
+**Why.** A transpiled circuit is far larger than its input, and without attribution you cannot tell which stage caused the growth. The ordering constraints are also real and subtle, and expressing them as a value rather than as statement order makes them inspectable and extensible.
+
+```python
+from qorch.transpiler import build_pass_manager, transpile_with_layout, TIFR_SUPERCONDUCTING, CouplingMap
+
+line = CouplingMap(TIFR_SUPERCONDUCTING.coupling_map)
+[name for name, _ in build_pass_manager(TIFR_SUPERCONDUCTING, line).passes]
+# ['decompose', 'route', 'fuse', 'lower', 'optimize']
+
+result = transpile_with_layout(Circuit(5).h(0).cx(0, 4), TIFR_SUPERCONDUCTING, coupling_map=line)
+print(result.metrics.format())    # gates in→out, SWAPs, depth, and a per-pass breakdown
+```
+
+`swaps_inserted` is counted the moment routing finishes, **before** lowering turns each SWAP into a CX triple — counting afterwards reports zero on every target without a native SWAP, which is most of them.
+
+### 20. Gate registry
+
+**What.** One `GateDef` per gate — arity, params, matrix, `is_clifford`, `self_inverse`, `angle_inverse`, duration — with every other table derived from it.
+**Why.** Gate facts previously lived in five places with nothing keeping them consistent, and they drifted: the optimizer believed `sx` was self-inverse. Since `SX·SX = X`, it cancelled `sx sx` pairs and turned a circuit outputting 1 into one outputting 0.
+
+```python
+from qorch.gates import GATES, gate_matrix, gate_duration_ns, CLIFFORD_GATES
+
+gate_matrix("rz", (0.7,))       # the single definition every layer uses
+gate_duration_ns("cx")          # 300.0 — advisory, overridden by DeviceCalibration
+"t" in CLIFFORD_GATES           # False — T is what Clifford+T accounting counts
+```
+
+### 21. Layout pass
+
+**What.** Choose where logical qubits *start*, before routing moves them.
+**Why.** Routing began from the identity placement, an arbitrary choice it then paid to correct. Qubits that interact constantly but start at opposite ends of a line cost SWAPs a better placement avoids outright.
+
+```python
+transpile_with_layout(circuit, TIFR_SUPERCONDUCTING, coupling_map=line,
+                      layout_method="dense")          # or "noise-adaptive", "cost-aware"
+```
+
+Measured on the TIFR line: a repeated distant pair goes 4 SWAPs → 0, a star 4 → 2, two distant pairs 6 → 0. Default stays `"trivial"`, so nothing changes unless asked.
+
+### 22. Euler fusion + commutation cancellation
+
+**What.** Collapse runs of single-qubit gates into `Rz·Ry·Rz`, and cancel inverse pairs separated only by gates they commute past.
+**Why.** The base optimizer only combines gates already adjacent. A run of nine single-qubit gates is one rotation however long it is, and `rz · cx · rz⁻¹` never becomes adjacent even though `rz` commutes through a CX control.
+
+```python
+from qorch.transpiler import fuse_single_qubit_runs, cancel_commuting
+
+cancel_commuting(fuse_single_qubit_runs(circuit))     # 35% fewer gates on random circuits
+```
+
+Fusion keeps its rewrite **only if it survives lowering**: collapsing to `Rz·Ry·Rz` is fewer gates as written, but a target with no native `ry` expands it into more than fusion saved.
+
+### 23. Calibration cost model
+
+**What.** Predict the probability a circuit produces the right answer on a specific device — gate error, read-out error, and decoherence from the schedule.
+**Why.** Every other compiler decision optimizes a proxy. A SWAP across two excellent qubits can beat a direct gate on a bad pair, and no amount of SWAP counting discovers that.
+
+```python
+from qorch.transpiler import estimate_cost, compare_costs
+
+estimate = estimate_cost(circuit, qpu.calibration())
+print(estimate.format())        # success probability, split by loss source
+compare_costs({"a": circuit_a, "b": circuit_b}, calibration)    # ranked best first
+```
+
+Used by `layout_method="cost-aware"`, which routes each candidate placement and scores the *result* rather than counting SWAPs.
+
+### 24. Scheduling & timing
+
+**What.** ASAP/ALAP start times in nanoseconds, circuit duration, and real idle windows.
+**Why.** Everything else counts gates; hardware cares how long qubits are alive. A CX is ~300 ns where an `rz` is a frame change costing nothing, so a circuit with fewer gates can take longer than one with more.
+
+```python
+from qorch.transpiler.scheduling import circuit_duration_ns, idle_report, schedule_asap
+from qorch.mitigation.dd import insert_dd_timed
+
+circuit_duration_ns(circuit, calibration)     # wall clock, not gate count
+idle_report(circuit)                          # {qubit: nanoseconds spent idle}
+insert_dd_timed(circuit, "xy4")               # DD only where the pulses actually fit
+```
+
+Slot-based DD packs pulses into a gap of three `rz` — which takes zero time. Timed DD measures the window and declines.
+
+### 25. Async execution (submit/poll/cancel)
+
+**What.** A job lifecycle around a serializable `JobHandle`, plus an authentication hook.
+**Why.** `run` blocks, which is right for a simulator and wrong for queued hardware where a job waits behind other people's for hours.
+
+```python
+import json
+from qorch.backends.async_backend import LocalAsyncSimulator, JobHandle
+
+backend = LocalAsyncSimulator(seed=1)
+handle = backend.submit(circuit, shots=1000)      # returns immediately
+backend.status(handle)                             # queued / running / done / cancelled / error
+result = backend.wait(handle, timeout=30)          # or backend.cancel(handle)
+
+JobHandle.from_dict(json.loads(json.dumps(handle.to_dict())))   # survives a restart
+```
+
+Credentials are never stored on the instance or taken as a constructor argument — they are read from the environment at point of use, so a token cannot reach a repr, a pickle, or a traceback.
+
+### 26. JobResult v2
+
+**What.** Per-shot memory, quasi-probabilities, expectation values, and the final layout alongside counts.
+**Why.** A histogram discards shot order, cannot represent a mitigated distribution (whose values may be negative), and cannot say which physical qubit produced each bit.
+
+```python
+result = LocalSimulator(seed=1, memory=True).run(circuit, shots=1000)
+result.memory[:3]                  # ('00', '11', '00') — order preserved
+result.probabilities               # follows mitigation when it has been applied
+result.expectation_z(0)            # ⟨Z⟩ on one qubit
+result.parity_expectation((0, 1))  # ⟨ZZ⟩ — 1.0 for a Bell pair
+```
+
+### 27. Fan-out scheduler + job store
+
+**What.** Submit a batch across async backends, collect as results land, and persist handles to SQLite.
+**Why.** With queued hardware the wait dominates, so everything should be queued at once. And a handle held only in memory dies with the process, taking hours of queue position with it.
+
+```python
+from qorch.async_scheduler import AsyncScheduler, JobStore, cost_based_policy
+
+scheduler = AsyncScheduler(backends=[qpu_a, qpu_b], policy=cost_based_policy,
+                           store=JobStore("jobs.db"))
+results = scheduler.run_batch([(circuit, 1000, "experiment-1")])
+JobStore("jobs.db").unfinished()      # what a restarted process should reclaim
+```
+
+`cost_based_policy` ranks devices by predicted fidelity from their own calibration, not by whether the circuit merely fits. `sqlite3` is standard library, so the dependency-free core is intact.
+
+### 28. Certification suite
+
+**What.** A reproducible, vendor-neutral device evaluation with explicit thresholds and provenance.
+**Why.** The benchmarks existed; what was missing is a report you can act on, compare, and re-run — and one that distinguishes *passed* from *could not be measured*.
+
+```python
+from qorch.certification import certify_backend, compare_reports, Thresholds
+
+report = certify_backend(qpu, shots=2048, seed=7)
+print(report.format())        # per-check pass/fail, uncertainties, verdict, provenance
+report.to_json()              # machine-readable, with seed and thresholds recorded
+
+print(compare_reports(report_a, report_b).format())
+```
+
+A device publishing no calibration reports `NOT_APPLICABLE`, never `PASS` — it has not taken the check, and blurring those would let an unmeasured device look good.
+
+### 29. Tool layer (MCP-ready)
+
+**What.** `simulate` / `analyze` / `transpile` / `draw` / `certify` as JSON-in, JSON-out functions.
+**Why.** The protocol binding is the easy half. What has to be right is a tool layer that validates at the boundary and never raises a traceback at a caller who cannot see the stack.
+
+```python
+from qorch.tools import call_tool, describe_tools
+
+call_tool("simulate", {"circuit": {"num_qubits": 2,
+                                   "gates": [{"name": "h", "qubits": [0]},
+                                             {"name": "cx", "qubits": [0, 1]}]},
+                       "shots": 1000, "seed": 1})
+# {'ok': True, 'counts': {...}, 'probabilities': {...}}
+```
+
+Errors return `{"ok": False, "error": ...}` rather than raising, and shot counts are bounded — an unbounded shot count on a tool endpoint is a way to ask a shared process for an hour of work.
+
+### 30. Grounded offline copilot
+
+**What.** Template-first circuit assistance, plus verification for circuits produced elsewhere.
+**Why.** Grounding means the guarantee comes from *executing the output*, not from trusting whatever produced it. No model, no network, no API key — it runs air-gapped like the rest of the library.
+
+```python
+from qorch.copilot import assist, accept_free_form
+
+assist("build me a bell pair")     # → verified circuit + explanation
+assist("write me a poem")          # → no circuit; says what it *can* do
+
+accept_free_form(spec_from_an_llm)  # verified by execution, or not returned at all
+```
+
+It cannot invent a circuit that does not exist, and it is allowed to say it does not understand — a far better failure than confidently producing a plausible circuit that computes the wrong thing.
+
+### 31. Photonic IR family
+
+**What.** A **separate** mode-based IR: beam splitters, phase shifters, transfer matrices, and photon statistics from permanents.
+**Why.** Linear optics does not fit the qubit IR. A qubit circuit is a unitary on 2^n amplitudes; linear optics is an n×n unitary on *modes*, with the physics in how indistinguishable photons populate them. Two photons in two modes is not a two-qubit state.
+
+```python
+from qorch.photonic import PhotonicCircuit, output_distribution, hong_ou_mandel_coincidence
+
+hong_ou_mandel_coincidence()        # 0.0 exactly — identical photons always bunch
+circuit = PhotonicCircuit(2).beam_splitter(0, 1)
+output_distribution(circuit, (0, 1))    # {(0, 0): 0.5, (1, 1): 0.5}
+```
+
+Photon statistics come from **permanents**, which is what makes boson sampling hard — exponential by physics, not by neglect, so these helpers are for small systems and say so.
+
+### 32. Neutral-atom arrays
+
+**What.** Connectivity derived from atom positions and the Rydberg blockade radius, and rearrangeable.
+**Why.** A superconducting coupling map is fixed at fabrication. Neutral atoms sit where the operator puts them, so the coupling map is an *output* of the arrangement rather than an input to compilation.
+
+```python
+from qorch.neutral_atom import line_array, grid_array, ring_array, gate_set_for
+
+array = grid_array(2, 3, spacing_um=5.0, blockade_radius_um=8.0)
+array.coupling_map()        # derived from geometry — the router needs no special case
+array.is_connected()
+transpile_with_layout(circuit, gate_set_for(array), coupling_map=array.coupling_map())
+```
+
+`rearranged()` moves atoms to suit a circuit, measurably reducing SWAPs — the thing a fixed lattice cannot do.
+
+### 33. CLI
 
 ```text
 python -m qorch <command> [options]
@@ -412,6 +688,7 @@ python -m qorch transpile --gates "h0,cx01" --target tifr-superconducting
 ```
 src/qorch/
   ir.py                  # immutable IR (gates, params, dynamic ops) + QASM-3 + JSON
+  gates.py               # GateDef registry — one definition per gate, all else derived
   adp.py                 # algorithm templates: QFT, Grover, QAOA, VQE, QPE
   dynamic.py             # teleportation + repetition code (dynamic circuits)
   pulse.py               # waveforms + rotating-frame pulse simulator + calibration
@@ -421,24 +698,38 @@ src/qorch/
   tomography.py          # 1Q + 2Q state tomography
   entanglement.py        # Bell fidelity, CHSH, entanglement witness
   benchmarking.py        # RB, QV (+ sweep), XEB
+  certification.py       # vendor-neutral device evaluation + report comparison
+  photonic.py            # SEPARATE IR: modes, beam splitters, permanents
+  neutral_atom.py        # Rydberg-blockade geometry → coupling map, rearrangeable
+  copilot.py             # template-first assistance + verification (offline, no model)
+  tools.py               # simulate/analyze/transpile/draw/certify as JSON tools
   qmi.py                 # QMI binary format (validated decode)
   scheduler.py           # FIFO queue + best-fit batch scheduler
+  async_scheduler.py     # fan-out over async backends + SQLite job store
   analysis.py            # circuit depth / gate count / fidelity
   visual.py              # ASCII circuit drawing
   cli.py                 # command-line interface (9 commands)
   backends/
     base.py              # Backend HAL + BackendProperties + DeviceCalibration + JobResult
     simulator.py         # dependency-free statevector (+ noise + dynamic execution)
+    numpy_kernel.py      # optional numpy kernel, auto above a measured crossover
+    gpu_kernel.py        # optional CuPy kernel — ⚠️ UNVERIFIED on hardware
+    async_backend.py     # submit/poll/cancel lifecycle + authentication hook
     density_simulator.py # Kraus-operator density-matrix simulation (T1/T2)
     stabilizer.py        # CHP tableau simulator (polynomial-time Clifford)
     indian_backend.py    # Indian QPU adapter (IIT Jodhpur, TIFR, DRDO MIRAI)
     qiskit_backend.py    # IBM / Qiskit Aer adapter (optional dependency)
   transpiler/
     gateset.py           # Indian-native + Clifford+T gate-set definitions
+    passes.py            # pass manager + per-pass transpile metrics
+    layout.py            # initial placement: dense / noise-adaptive / cost-aware
     decompose.py         # recursive decomposition (incl. Clifford+T)
     synthesis.py         # meet-in-the-middle Rz → Clifford+T, with reported error
     routing.py           # greedy + SabreSWAP routing (layout-correct) + edge-direction fixing
+    fusion.py            # Euler fusion + commutation-aware cancellation
     optimizer.py         # gate cancellation + rotation merging
+    scheduling.py        # ASAP/ALAP timing, idle windows, circuit duration
+    cost.py              # calibration cost model for ranking compilations
   mitigation/
     readout.py  zne.py  pec.py  dd.py  twirling.py  pipeline.py
 tests/                   # 1032 unit tests (~95% coverage)
