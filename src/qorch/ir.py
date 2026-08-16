@@ -2,7 +2,8 @@
 
 The IR is immutable: every builder method returns a *new* ``Circuit`` (see ADR-5).
 Bit-ordering convention: in a result bitstring, the leftmost character is qubit 0
-(documented in architecture.md §5 to avoid silent endianness bugs).
+(documented in ``docs/architecture.md`` §5 — endianness bugs are silent, so the
+convention is stated once and obeyed everywhere).
 """
 
 from __future__ import annotations

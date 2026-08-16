@@ -685,6 +685,11 @@ python -m qorch transpile --gates "h0,cx01" --target tifr-superconducting
 
 ## Architecture
 
+Two companion documents go deeper than this tree:
+
+- **[docs/architecture.md](docs/architecture.md)** — how the layers fit together, the recorded architecture decisions (ADR-2/5/6) that the source cites by number, the pipeline's load-bearing ordering constraints, the bit-ordering convention, and what the tests are actually checking.
+- **[docs/CODEMAP.md](docs/CODEMAP.md)** — every module, what it owns, what it deliberately does *not* do, and where to start for a given kind of change.
+
 ```
 src/qorch/
   ir.py                  # immutable IR (gates, params, dynamic ops) + QASM-3 + JSON

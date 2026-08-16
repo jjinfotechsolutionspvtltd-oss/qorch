@@ -1,3 +1,15 @@
+"""Native gate sets: what each target can actually execute.
+
+A gate set is the pair of facts compilation needs about a device — which gates
+are physically implemented, and which qubits can interact. Everything the
+transpiler does is in service of reaching one of these.
+
+The sets here describe real Indian hardware plus Clifford+T, the fault-tolerant
+set that is not a device at all but a resource-accounting target. A neutral-atom
+set is built per-arrangement instead, since its connectivity comes from geometry
+rather than fabrication — see :mod:`qorch.neutral_atom`.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
