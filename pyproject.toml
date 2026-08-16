@@ -34,6 +34,10 @@ Issues = "https://github.com/jjinfotechsolutionspvtltd-oss/qorch/issues"
 # M2+: real-QPU adapters and transpiler reuse layer in.
 qiskit = ["qiskit>=1.0", "qiskit-aer>=0.14"]
 braket = ["amazon-braket-sdk>=1.70"]
+# UNVERIFIED: the GPU kernel has never been run on a CUDA device by its authors.
+# See qorch.backends.gpu_kernel — the algorithm is tested against numpy, the
+# CuPy binding is not. Pick the wheel matching your CUDA version.
+gpu = ["cupy-cuda12x>=13.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.5", "mypy>=1.8", "numpy>=1.24", "qiskit>=1.0", "qiskit-aer>=0.14"]
 docs = ["pdoc>=14.0"]
 
