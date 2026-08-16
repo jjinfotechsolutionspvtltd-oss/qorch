@@ -795,4 +795,3 @@ vulnerability, see [SECURITY.md](SECURITY.md) — please don't open a public iss
 
 Permissive, with an explicit patent grant. Use it commercially, modify it, redistribute
 it; keep the notice and state your changes.
-```
