@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qorch"
-version = "0.1.0"
+version = "1.0.0"
 description = "QS-004 Quantum Orchestration Layer — hardware-agnostic control plane for quantum execution"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -21,7 +21,7 @@ _PAULI: dict[str, tuple[complex, ...]] = {
 }
 
 
-def _rotate_to_basis(circuit: Circuit, qubit: int, basis: str) -> Circuit:
+def rotate_to_basis(circuit: Circuit, qubit: int, basis: str) -> Circuit:
     """Prepend rotation so Z-measurement gives the desired Pauli expectation."""
     if basis == "Z":
         return circuit
@@ -64,7 +64,7 @@ def _measure_expectation_1q(
     Measures only ``qubit`` (a single classical bit), so the result key is one
     character read at position 0 — correct for any qubit index, not just 0.
     """
-    rot = _rotate_to_basis(circuit, qubit, basis).measure(qubit)
+    rot = rotate_to_basis(circuit, qubit, basis).measure(qubit)
     counts = backend.run(rot, shots=shots).counts
     return _expectation_1q(counts, shots, 0)
 
@@ -123,9 +123,9 @@ def state_tomography_2q(
     for b0, b1 in bases:
         c = circuit
         if b0 != "I":
-            c = _rotate_to_basis(c, 0, b0)
+            c = rotate_to_basis(c, 0, b0)
         if b1 != "I":
-            c = _rotate_to_basis(c, 1, b1)
+            c = rotate_to_basis(c, 1, b1)
         c = c.measure(0, 1)
         counts = backend.run(c, shots=shots).counts
         total = sum(counts.values())
@@ -197,3 +197,7 @@ def purity(rho: list[list[complex]]) -> float:
         for j in range(n):
             total += abs(rho[i][j]) ** 2
     return total
+
+
+#: Backwards-compatible alias for the pre-1.0 private name.
+_rotate_to_basis = rotate_to_basis

@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from qorch.analysis import _compute_depth
+from qorch.analysis import circuit_depth
 from qorch.ir import Circuit, Gate
 
 
@@ -115,7 +115,7 @@ class PassManager:
                 name=name,
                 gate_count=len(current.gates),
                 two_qubit_count=_two_qubit_count(current),
-                depth=_compute_depth(current),
+                depth=circuit_depth(current),
             ))
             # Count SWAPs while they still exist as SWAPs (see TranspileMetrics).
             if name.startswith("route"):
@@ -126,7 +126,7 @@ class PassManager:
             output_gate_count=len(current.gates),
             two_qubit_count=_two_qubit_count(current),
             swaps_inserted=swaps_inserted,
-            depth=_compute_depth(current),
+            depth=circuit_depth(current),
             passes=tuple(records),
         )
         return current, state, metrics

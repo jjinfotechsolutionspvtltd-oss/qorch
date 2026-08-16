@@ -38,8 +38,8 @@ def circuit_report(circuit: Circuit, gate_error_rate: float = 0.01) -> dict:
     }
 
 
-def _compute_depth(circuit: Circuit) -> int:
-    """Compute circuit depth (critical path length).
+def circuit_depth(circuit: Circuit) -> int:
+    """Circuit depth: the critical-path length in gate layers.
 
     Simple greedy algorithm: track the last time step each qubit was used.
     """
@@ -73,3 +73,7 @@ def format_report(report: dict) -> str:
     for name, count in sorted(report["gate_counts"].items()):
         lines.append(f"  {name}: {count}")
     return "\n".join(lines)
+
+
+#: Backwards-compatible alias for the pre-1.0 private name.
+_compute_depth = circuit_depth

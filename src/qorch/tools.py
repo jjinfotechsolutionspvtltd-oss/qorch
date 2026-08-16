@@ -38,7 +38,7 @@ def _ok(**payload: Any) -> dict[str, Any]:
     return {"ok": True, **payload}
 
 
-def _parse_circuit(spec: Any) -> Circuit:
+def parse_circuit(spec: Any) -> Circuit:
     """Build a Circuit from a JSON spec, rejecting anything unusable.
 
     Accepts either qorch's own JSON serialization or a compact
@@ -62,7 +62,7 @@ def _parse_circuit(spec: Any) -> Circuit:
         name = entry["name"]
         qubits = tuple(int(q) for q in entry.get("qubits", ()))
         params = tuple(float(p) for p in entry.get("params", ()))
-        circuit = circuit._add(name, *qubits, params=params)
+        circuit = circuit.gate(name, *qubits, params=params)
     measured = spec.get("measured")
     if measured:
         circuit = circuit.measure(*(int(q) for q in measured))
@@ -95,7 +95,7 @@ def simulate(request: dict[str, Any]) -> dict[str, Any]:
     """
     from qorch import LocalSimulator
 
-    circuit = _parse_circuit(request.get("circuit"))
+    circuit = parse_circuit(request.get("circuit"))
     shots = int(request.get("shots", 1024))
     if not 0 < shots <= _MAX_SHOTS:
         return _fail(f"shots must be between 1 and {_MAX_SHOTS}")
@@ -113,7 +113,7 @@ def simulate(request: dict[str, Any]) -> dict[str, Any]:
 @_guard
 def analyze(request: dict[str, Any]) -> dict[str, Any]:
     """Report depth, gate counts and an estimated fidelity for a circuit."""
-    circuit = _parse_circuit(request.get("circuit"))
+    circuit = parse_circuit(request.get("circuit"))
     report = circuit_report(circuit, float(request.get("gate_error_rate", 0.01)))
     return _ok(**report)
 
@@ -143,7 +143,7 @@ def transpile(request: dict[str, Any]) -> dict[str, Any]:
         return _fail(f"unknown target {name!r}; options: {sorted(targets)}")
     target = targets[name]
 
-    circuit = _parse_circuit(request.get("circuit"))
+    circuit = parse_circuit(request.get("circuit"))
     coupling = CouplingMap(target.coupling_map) if target.coupling_map else None
     result = transpile_with_layout(
         circuit, target, coupling_map=coupling,
@@ -171,7 +171,7 @@ def transpile(request: dict[str, Any]) -> dict[str, Any]:
 @_guard
 def draw(request: dict[str, Any]) -> dict[str, Any]:
     """Render a circuit as ASCII art."""
-    circuit = _parse_circuit(request.get("circuit"))
+    circuit = parse_circuit(request.get("circuit"))
     return _ok(diagram=draw_circuit(circuit))
 
 
@@ -229,3 +229,7 @@ def call_tool(name: str, request: dict[str, Any] | None = None) -> dict[str, Any
     if tool is None:
         return _fail(f"unknown tool {name!r}; available: {sorted(TOOLS)}")
     return tool(request or {})
+
+
+#: Backwards-compatible alias for the pre-1.0 private name.
+_parse_circuit = parse_circuit

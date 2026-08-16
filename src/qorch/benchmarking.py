@@ -237,7 +237,7 @@ def _su4_su2_su4_circuit(num_qubits: int, rng: random.Random) -> Circuit:
         rng.shuffle(qubits)
         for i in range(0, num_qubits - 1, 2):
             for gate in _random_su4(rng, qubits[i], qubits[i + 1]):
-                c = c._add(gate.name, *gate.qubits, params=gate.params)
+                c = c.gate(gate.name, *gate.qubits, params=gate.params)
     return c
 
 

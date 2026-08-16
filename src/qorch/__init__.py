@@ -51,7 +51,22 @@ from qorch.mitigation.zne import (
 from qorch.scheduler import Scheduler, first_available
 from qorch.surface_code import ToricCode, toric_logical_error_rate
 
-__version__ = "0.1.0"
+def _detect_version() -> str:
+    """Read the installed distribution's version.
+
+    Derived rather than duplicated: the version lived here *and* in
+    pyproject.toml, which is two places to update and one to forget. The
+    fallback covers running from a source tree that was never installed.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("qorch")
+    except PackageNotFoundError:            # pragma: no cover - source checkout
+        return "1.0.0"
+
+
+__version__ = _detect_version()
 
 __all__ = [
     "Backend",

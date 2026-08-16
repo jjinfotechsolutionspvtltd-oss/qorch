@@ -149,3 +149,23 @@ def gate_matrix(name: str, params: tuple[float, ...] = ()) -> Matrix2:
 def gate_duration_ns(name: str) -> float:
     """Advisory duration, for scheduling in the absence of calibration data."""
     return gate_def(name).duration_ns
+
+
+def xx_matrix(theta: float) -> tuple[complex, ...]:
+    """Mølmer–Sørensen entangler XX(θ) = exp(-iθ X⊗X), row-major 4×4.
+
+    Basis order (q0 high bit, q1 low bit): 00, 01, 10, 11.
+
+    Two-qubit matrices live here for the same reason the single-qubit ones do:
+    this used to be private to the statevector simulator and imported from there
+    by the Indian-QPU backend, which made a simulator internal load-bearing for
+    a hardware adapter. Gate matrices belong to the gate registry.
+    """
+    c = math.cos(theta)
+    s = -1j * math.sin(theta)
+    return (
+        c, 0, 0, s,
+        0, c, s, 0,
+        0, s, c, 0,
+        s, 0, 0, c,
+    )
