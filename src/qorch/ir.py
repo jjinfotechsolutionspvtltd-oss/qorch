@@ -208,8 +208,25 @@ class Circuit:
         )
 
     # --- immutable builders ----------------------------------------------
-    def _add(self, name: str, *qubits: int, params: tuple[ParamValue, ...] = ()) -> "Circuit":
+    def gate(
+        self, name: str, *qubits: int, params: tuple[ParamValue, ...] = ()
+    ) -> "Circuit":
+        """Append any supported gate by name.
+
+        The general form behind the named builders (:meth:`h`, :meth:`cx`, …).
+        Public because building a gate from a *name* is a real need, not an
+        internal shortcut: deserializing JSON, driving the tool layer from an
+        external request, and generating random circuits all have the name as
+        data rather than as code. Those callers were reaching for the private
+        ``_add``, which made a private method load-bearing across the library.
+
+        Raises if ``name`` is not a supported gate or a qubit is out of range —
+        the same validation every other builder gets.
+        """
         return self._appending(Gate(name, qubits, params))
+
+    #: Backwards-compatible alias for the pre-1.0 private name.
+    _add = gate
 
     def h(self, q: int) -> "Circuit":
         return self._add("h", q)

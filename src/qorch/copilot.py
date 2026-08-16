@@ -69,15 +69,15 @@ def _qft(num_qubits: int = 3) -> Circuit:
 
 
 def _grover(num_qubits: int = 3, target: str = "101") -> Circuit:
-    from qorch.adp import grover_diffusion, oracle_by_bitstring, _combine_circuits
+    from qorch.adp import combine_circuits, grover_diffusion, oracle_by_bitstring
 
     target = target[:num_qubits].ljust(num_qubits, "0")
     c = Circuit(num_qubits)
     for q in range(num_qubits):
         c = c.h(q)
     for _ in range(max(1, int(math.pi / 4 * math.sqrt(2 ** num_qubits)))):
-        c = _combine_circuits(c, oracle_by_bitstring(num_qubits, target))
-        c = _combine_circuits(c, grover_diffusion(num_qubits))
+        c = combine_circuits(c, oracle_by_bitstring(num_qubits, target))
+        c = combine_circuits(c, grover_diffusion(num_qubits))
     return c.measure(*range(num_qubits))
 
 
@@ -370,10 +370,10 @@ def accept_free_form(
     and the guarantee comes from executing the result rather than from believing
     the source.
     """
-    from qorch.tools import _parse_circuit
+    from qorch.tools import parse_circuit
 
     try:
-        circuit = _parse_circuit(spec)
+        circuit = parse_circuit(spec)
     except (ValueError, KeyError, TypeError) as exc:
         return Assistance(
             request="<free-form>",

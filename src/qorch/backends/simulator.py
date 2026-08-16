@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from qorch.backends import gpu_kernel, numpy_kernel
 from qorch.backends.base import Backend, BackendProperties, JobResult
-from qorch.gates import GATES, gate_matrix
+from qorch.gates import GATES, gate_matrix, xx_matrix
 from qorch.ir import Circuit, Measure, Reset, bound_params
 
 _INV_SQRT2 = 1.0 / math.sqrt(2.0)
@@ -42,19 +42,11 @@ def _gate_matrix(name: str, params: tuple[float, ...] = ()) -> tuple[complex, co
     return gate_matrix(name, params)
 
 
-def _xx_matrix(theta: float) -> tuple[complex, ...]:
-    """Mølmer–Sørensen entangler XX(θ) = exp(-iθ X⊗X) as a row-major 4×4 tuple.
-
-    Basis order (q0 high bit, q1 low bit): 00, 01, 10, 11.
-    """
-    c = math.cos(theta)
-    s = -1j * math.sin(theta)
-    return (
-        c, 0, 0, s,
-        0, c, s, 0,
-        0, s, c, 0,
-        s, 0, 0, c,
-    )
+#: Backwards-compatible alias. The definition now lives in the gate registry,
+#: where gate matrices belong — this module had been the de-facto owner of the
+#: MS matrix, which made a simulator internal load-bearing for the hardware
+#: adapter that imported it.
+_xx_matrix = xx_matrix
 
 # Pauli error operators for the depolarizing channel (trajectory Monte Carlo).
 _PAULIS: dict[str, tuple[complex, complex, complex, complex]] = {

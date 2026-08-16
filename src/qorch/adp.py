@@ -147,7 +147,7 @@ def run_qft(
     """
     c = qft_circuit(num_qubits)
     if input_state is not None:
-        c = _combine_circuits(input_state, c)
+        c = combine_circuits(input_state, c)
     c = c.measure(*range(num_qubits))
     result = backend.run(c, shots=shots)
     return QFTResult(num_qubits=num_qubits, counts=result.counts, shots=result.shots)
@@ -192,7 +192,7 @@ def oracle_by_bitstring(num_qubits: int, target: str) -> Circuit:
     return c
 
 
-def _combine_circuits(a: Circuit, b: Circuit) -> Circuit:
+def combine_circuits(a: Circuit, b: Circuit) -> Circuit:
     """Append circuit ``b`` after circuit ``a`` (same qubit count)."""
     from dataclasses import replace
     return replace(a, gates=a.gates + b.gates)
@@ -232,8 +232,8 @@ def run_grover(
 
     for _ in range(iterations):
         for m in marked:
-            c = _combine_circuits(c, oracle_by_bitstring(num_qubits, m))
-        c = _combine_circuits(c, grover_diffusion(num_qubits))
+            c = combine_circuits(c, oracle_by_bitstring(num_qubits, m))
+        c = combine_circuits(c, grover_diffusion(num_qubits))
 
     c = c.measure(*range(num_qubits))
     result = backend.run(c, shots=shots)
@@ -295,8 +295,8 @@ def run_qaoa(
         c = c.h(q)
 
     for _ in range(layers):
-        c = _combine_circuits(c, qaoa_cost_circuit(num_qubits, gamma, edges))
-        c = _combine_circuits(c, qaoa_mixer_circuit(num_qubits, beta))
+        c = combine_circuits(c, qaoa_cost_circuit(num_qubits, gamma, edges))
+        c = combine_circuits(c, qaoa_mixer_circuit(num_qubits, beta))
 
     c = c.measure(*range(num_qubits))
     result = backend.run(c, shots=shots)
@@ -340,10 +340,10 @@ def _pauli_expectation(
     shots: int,
 ) -> float:
     """Measure expectation of a Pauli operator on a qubit."""
-    from qorch.tomography import _rotate_to_basis  # noqa: PLC2701
+    from qorch.tomography import rotate_to_basis
 
     c = circuit
-    c = _rotate_to_basis(c, qubit, basis)
+    c = rotate_to_basis(c, qubit, basis)
     c = c.measure(qubit)
     result = backend.run(c, shots=shots)
     p0 = result.counts.get("0", 0) / shots
@@ -439,7 +439,7 @@ def qpe_circuit(num_qubits: int, unitary: Circuit) -> Circuit:
 
     for i in range(num_qubits):
         for _ in range(1 << i):
-            c = _combine_circuits(c, _shift_qubits(unitary, num_qubits - 1 - i, num_qubits))
+            c = combine_circuits(c, _shift_qubits(unitary, num_qubits - 1 - i, num_qubits))
 
     # Inverse QFT on phase qubits
     for i in range(num_qubits // 2):
@@ -515,3 +515,7 @@ def run_qpe(
         phase=phase,
         counts=result.counts,
     )
+
+
+#: Backwards-compatible alias for the pre-1.0 private name.
+_combine_circuits = combine_circuits

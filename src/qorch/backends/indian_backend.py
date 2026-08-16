@@ -19,7 +19,7 @@ from qorch.backends.base import (
     JobResult,
     QubitCalibration,
 )
-from qorch.backends.simulator import _xx_matrix
+from qorch.gates import xx_matrix
 from qorch.gates import gate_matrix
 from qorch.ir import Circuit, bound_params
 from qorch.transpiler import IndianGateSet, decompose, route, CouplingMap
@@ -295,7 +295,7 @@ class IndianQPU(Backend):
                     self._apply_gate_noise(state, n, g.qubits)
                 elif g.name == "ms":
                     theta = float(g.params[0]) if g.params else 0.0
-                    self._apply_2q(state, n, _xx_matrix(theta), g.qubits[0], g.qubits[1])
+                    self._apply_2q(state, n, xx_matrix(theta), g.qubits[0], g.qubits[1])
                     self._apply_gate_noise(state, n, g.qubits)
                 else:
                     m = _indian_gate_matrix(g.name, bound_params(g.params))
