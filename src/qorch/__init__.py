@@ -1,7 +1,10 @@
 """qorch — the QS-004 Quantum Orchestration Layer.
 
 A hardware-agnostic control plane for quantum execution: IR ingestion, a backend HAL,
-error mitigation, and scheduling. See ``../architecture.md``.
+error mitigation, and scheduling.
+
+See ``docs/architecture.md`` for the design and its recorded decisions, and
+``docs/CODEMAP.md`` for what each module owns.
 """
 
 from qorch.backends.base import (
